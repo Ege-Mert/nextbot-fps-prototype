@@ -2,7 +2,7 @@
 let scene, camera, renderer;
 let player; // Player object that will hold the camera
 let canvas;
-let instructions, hud, debugInfo;
+let instructions, hud, debugInfo, bhopIndicator;
 
 // Player variables
 let moveForward = false;
@@ -60,6 +60,7 @@ function init() {
     instructions = document.getElementById('instructions');
     hud = document.getElementById('hud');
     debugInfo = document.getElementById('debug-info');
+    bhopIndicator = document.getElementById('indicator');
     canvas = document.getElementById('game-canvas');
 
     // Create the scene
@@ -428,6 +429,13 @@ function onKeyDown(event) {
                 if (timeSinceLastJump <= BHOP_WINDOW && timeSinceLastJump > 0) {
                     isBhopping = true;
                     console.log('BHOP activated!');
+                    
+                    // Show bhop indicator
+                    bhopIndicator.classList.add('active');
+                    setTimeout(() => {
+                        bhopIndicator.classList.remove('active');
+                    }, 1000);
+                    
                 } else {
                     isBhopping = false;
                 }
