@@ -18,53 +18,55 @@ export class Enemy extends PhysicsEntity {
         this.WIDTH = 1.5;
         this.BASE_SPEED = 5;
         
-        // Calculate actual speed using multiplier
-        this.speed = this.BASE_SPEED * this.speedMultiplier;
+        // Advanced movement parameters
+        this.currentVelocity = new THREE.Vector3(); // For smooth momentum-based movement
+        this.acceleration = 25; // How quickly the enemy speeds up
+        this.maxSpeed = this.BASE_SPEED * this.speedMultiplier; // Current maximum speed
+        this.maxPossibleSpeed = 15; // Absolute maximum possible speed
+        this.minSpeed = 1; // Never stop completely
+        this.turnRate = 5; // How quickly the enemy can change direction (lower = smoother turns)
+        
+        // Target tracking
+        this.actualTarget = new THREE.Vector3(); // The current movement target
+        this.previousTarget = new THREE.Vector3(); // Previous target for interpolation
+        this.targetChangedTime = 0; // When the target last changed
+        this.targetTransitionDuration = 0.3; // Seconds to smoothly transition to new target
         
         // AI settings
         this.detectionRange = 100; // How far the enemy can detect the player
-        this.updateInterval = 500; // ms between path recalculations
-        this.lastPathUpdate = 0;
-        this.targetPosition = null;
+        this.pathRecalculationInterval = 0.75; // Seconds between path recalculations
+        this.targetUpdatePriority = 0.3; // Priority to update target (0-1)
+        this.lastPathUpdateTime = 0;
         this.currentPath = [];
         this.currentPathIndex = 0;
-        this.stuckCounter = 0;
-        this.maxStuckCount = 5;
-        this.lastPosition = new THREE.Vector3();
-        this.stuckThreshold = 0.5; // Distance threshold to consider enemy stuck
+        this.hasReachedTarget = false; // Whether enemy has reached its current target
+        
+        // Stuck detection and recovery
+        this.stuckDetectionWindow = 1.0; // Time window to check for being stuck
+        this.stuckDetectionDistance = 0.8; // Minimum distance to move to avoid being stuck
+        this.stuckDetectionPositions = []; // Stores past positions to detect getting stuck
+        this.stuckDetectionTimes = []; // Times when positions were recorded
+        this.stuckCounter = 0; // Number of consecutive frames considered stuck
+        this.isStuck = false; // Is currently considered stuck
+        this.stuckRecoveryTime = 0; // Time stuck recovery began
+        this.stuckRecoveryDuration = 1.5; // How long to perform recovery movement
+        this.stuckEscapeDirection = new THREE.Vector3(); // Direction to escape when stuck
         
         // Create the enemy mesh
         this.createMesh(spawnPosition);
         
-        // Utility classes
+        // Initialize utility classes
         this.collisionUtils = new CollisionUtils();
         this.pathfinding = new PathfindingService(scene);
         
-        // Special abilities
-        this.canJump = true;
-        this.jumpCooldown = 0;
-        this.jumpForce = 8;
-        this.jumpProbability = 0.02; // 2% chance per frame to jump when chasing
+        // State machine
+        this.state = 'SPAWN';
+        this.previousState = 'SPAWN';
+        this.stateTransitionTime = 0;
         
-        // State machine for more complex behaviors
-        this.state = 'IDLE';
-        this.states = {
-            IDLE: {
-                update: this.updateIdle.bind(this)
-            },
-            CHASE: {
-                update: this.updateChase.bind(this)
-            },
-            FLANK: {
-                update: this.updateFlank.bind(this)
-            },
-            STUCK: {
-                update: this.updateStuck.bind(this)
-            }
-        };
-        
-        // Initialize velocity
-        this.velocity = new THREE.Vector3();
+        // History for smoothing
+        this.positionHistory = []; // Store recent positions for smoothing
+        this.rotationHistory = []; // Store recent rotations for smoothing
     }
     
     /**
@@ -103,8 +105,11 @@ export class Enemy extends PhysicsEntity {
         this.mesh.position.copy(position);
         this.mesh.position.y = this.HEIGHT / 2; // Center vertically
         
-        // Store initial position for stuck detection
-        this.lastPosition.copy(this.mesh.position);
+        // Initialize position and rotation history with current values
+        for (let i = 0; i < 5; i++) {
+            this.positionHistory.push(this.mesh.position.clone());
+            this.rotationHistory.push(this.mesh.rotation.y);
+        }
         
         // Enable shadows
         this.bodyMesh.castShadow = true;
@@ -117,18 +122,63 @@ export class Enemy extends PhysicsEntity {
         
         // Create initial bounding box
         this.boundingBox = new THREE.Box3().setFromObject(this.mesh);
+        
+        // Initialize targets
+        this.previousTarget.copy(position);
+        this.actualTarget.copy(position);
     }
     
     /**
-     * Update enemy position and behavior
-     * @param {number} delta - Time delta
+     * Main update method - called every frame
+     * @param {number} delta - Time delta in seconds
      * @param {THREE.Vector3} playerPosition - Current player position
-     * @param {THREE.Scene} scene - Game scene
+     * @param {THREE.Scene} scene - The game scene
      * @param {number} playerSpeed - Current player speed for dynamic difficulty
      */
     update(delta, playerPosition, scene, playerSpeed = 0) {
-        // Apply gravity (for jumping enemies)
-        this.velocity.y -= 20 * delta; // Gravity
+        // Ensure delta is reasonable to prevent physics glitches
+        delta = Math.min(delta, 0.1);
+        
+        // Apply gravity for physics consistency
+        this.applyGravity(delta, scene);
+        
+        // Update stuck detection
+        this.updateStuckDetection(delta);
+        
+        // Update state based on conditions
+        this.updateState(playerPosition, playerSpeed);
+        
+        // Execute the appropriate behavior for the current state
+        switch (this.state) {
+            case 'SPAWN':
+                this.executeSpawnBehavior(delta);
+                break;
+            case 'IDLE':
+                this.executeIdleBehavior(delta);
+                break;
+            case 'CHASE':
+                this.executeChaseBehavior(delta, playerPosition, playerSpeed);
+                break;
+            case 'FLANK':
+                this.executeFlankBehavior(delta, playerPosition);
+                break;
+            case 'STUCK':
+                this.executeStuckBehavior(delta);
+                break;
+        }
+        
+        // Update bounding box for collision detection
+        this.boundingBox = new THREE.Box3().setFromObject(this.mesh);
+    }
+    
+    /**
+     * Apply gravity and handle ground collisions
+     * @param {number} delta - Time delta
+     * @param {THREE.Scene} scene - The game scene
+     */
+    applyGravity(delta, scene) {
+        // Apply gravity
+        this.velocity.y -= 20 * delta;
         
         // Check if on ground
         const isOnGround = this.collisionUtils.isOnGround(
@@ -140,10 +190,9 @@ export class Enemy extends PhysicsEntity {
         if (isOnGround && this.velocity.y < 0) {
             this.velocity.y = 0;
             this.mesh.position.y = this.HEIGHT / 2;
-            this.canJump = true;
         }
         
-        // Apply vertical velocity
+        // Apply vertical velocity for jumping/falling
         this.mesh.position.y += this.velocity.y * delta;
         
         // Ensure enemy stays above ground
@@ -151,223 +200,254 @@ export class Enemy extends PhysicsEntity {
             this.mesh.position.y = this.HEIGHT / 2;
             this.velocity.y = 0;
         }
+    }
+    
+    /**
+     * Update stuck detection by tracking positions over time
+     * @param {number} delta - Time delta
+     */
+    updateStuckDetection(delta) {
+        const now = performance.now() / 1000; // Current time in seconds
         
-        // Update jump cooldown
-        if (this.jumpCooldown > 0) {
-            this.jumpCooldown -= delta;
+        // Add current position and time to history
+        this.stuckDetectionPositions.push(this.mesh.position.clone());
+        this.stuckDetectionTimes.push(now);
+        
+        // Remove old positions outside our detection window
+        while (this.stuckDetectionTimes.length > 0 && 
+               this.stuckDetectionTimes[0] < now - this.stuckDetectionWindow) {
+            this.stuckDetectionPositions.shift();
+            this.stuckDetectionTimes.shift();
         }
         
-        // Check if stuck by comparing current position to last position
-        const distanceMoved = this.mesh.position.distanceTo(this.lastPosition);
-        if (distanceMoved < this.stuckThreshold) {
-            this.stuckCounter++;
-            if (this.stuckCounter > this.maxStuckCount && this.state !== 'STUCK') {
-                this.setState('STUCK');
+        // If we have enough data points, check if we're stuck
+        if (this.stuckDetectionPositions.length > 5 && !this.isStuck) {
+            const oldestPos = this.stuckDetectionPositions[0];
+            const newestPos = this.stuckDetectionPositions[this.stuckDetectionPositions.length - 1];
+            const distanceMoved = oldestPos.distanceTo(newestPos);
+            
+            // Determine if the enemy is considered stuck
+            if (distanceMoved < this.stuckDetectionDistance && this.state !== 'IDLE' && this.state !== 'SPAWN') {
+                this.stuckCounter++;
+                
+                if (this.stuckCounter > 20) { // Need multiple frames of being stuck
+                    this.setState('STUCK');
+                    this.stuckEscapeDirection = this.generateEscapeDirection();
+                    this.stuckRecoveryTime = now;
+                }
+            } else {
+                // Reset counter if moving properly
+                this.stuckCounter = Math.max(0, this.stuckCounter - 2);
             }
-        } else {
-            this.stuckCounter = 0;
-            this.lastPosition.copy(this.mesh.position);
         }
-        
-        // Dynamic speed adjustment based on player's speed - makes enemies more challenging
-        // when player is using bhop effectively
-        const speedModifier = 1.0 + (Math.min(playerSpeed, 30) / 30) * 0.5; // Up to 50% faster
-        this.speed = this.BASE_SPEED * this.speedMultiplier * speedModifier;
-        
-        // Determine if player is within detection range
+    }
+    
+    /**
+     * Generate a random direction to escape when stuck
+     * @returns {THREE.Vector3} A normalized direction vector
+     */
+    generateEscapeDirection() {
+        const angle = Math.random() * Math.PI * 2;
+        return new THREE.Vector3(
+            Math.cos(angle),
+            0,
+            Math.sin(angle)
+        ).normalize();
+    }
+    
+    /**
+     * Update the enemy state based on conditions
+     * @param {THREE.Vector3} playerPosition - Current player position
+     * @param {number} playerSpeed - Player's current speed
+     */
+    updateState(playerPosition, playerSpeed) {
+        const now = performance.now() / 1000; // Current time in seconds
         const distanceToPlayer = this.mesh.position.distanceTo(playerPosition);
         
+        // Special case: already in stuck state
+        if (this.state === 'STUCK') {
+            // Check if we should exit stuck state
+            if (now - this.stuckRecoveryTime > this.stuckRecoveryDuration) {
+                this.isStuck = false;
+                this.stuckCounter = 0;
+                
+                // Return to appropriate state
+                if (distanceToPlayer <= this.detectionRange) {
+                    this.setState('CHASE');
+                } else {
+                    this.setState('IDLE');
+                }
+            }
+            return; // Don't change state otherwise
+        }
+        
+        // Special case: spawn state is temporary
+        if (this.state === 'SPAWN' && now - this.stateTransitionTime > 0.5) {
+            this.setState(distanceToPlayer <= this.detectionRange ? 'CHASE' : 'IDLE');
+            return;
+        }
+        
+        // Player detection
         if (distanceToPlayer <= this.detectionRange) {
-            // Player detected, enter chase mode if not already
-            if (this.state !== 'CHASE' && this.state !== 'FLANK' && this.state !== 'STUCK') {
-                // 80% chance to chase directly, 20% chance to try flanking
-                this.setState(Math.random() < 0.8 ? 'CHASE' : 'FLANK');
+            // Player detected, enter chase or flank mode
+            if (this.state !== 'CHASE' && this.state !== 'FLANK') {
+                // 85% chance to chase directly, 15% chance to try flanking
+                const newState = Math.random() < 0.85 ? 'CHASE' : 'FLANK';
+                this.setState(newState);
             }
-            
-            // Update target position
-            this.targetPosition = playerPosition.clone();
-        } else {
+            // Switch between chase and flank modes occasionally for more dynamic behavior
+            else if (this.state === 'CHASE' && Math.random() < 0.002) {
+                this.setState('FLANK');
+            }
+            else if (this.state === 'FLANK' && Math.random() < 0.01) {
+                this.setState('CHASE');
+            }
+        } else if (this.state !== 'IDLE' && this.state !== 'SPAWN') {
             // Player out of range, go idle
-            if (this.state !== 'IDLE') {
-                this.setState('IDLE');
-            }
+            this.setState('IDLE');
         }
-        
-        // Execute current state's update behavior
-        if (this.state && this.states[this.state]) {
-            this.states[this.state].update(delta, playerPosition);
-        }
-        
-        // Update the enemy's bounding box
-        this.boundingBox = new THREE.Box3().setFromObject(this.mesh);
     }
     
     /**
-     * Change enemy state
-     * @param {string} newState - New state to transition to
+     * Change the enemy state
+     * @param {string} newState - The new state to enter
      */
     setState(newState) {
-        // Don't change if already in this state
         if (this.state === newState) return;
         
-        // Exit current state
-        if (this.state === 'STUCK') {
-            // Reset stuck counter when leaving stuck state
-            this.stuckCounter = 0;
-        }
-        
-        // Enter new state
+        this.previousState = this.state;
         this.state = newState;
+        this.stateTransitionTime = performance.now() / 1000;
         
-        if (newState === 'FLANK') {
-            // Calculate flank position when entering flank state
-            this.calculateFlankPosition();
-        }
-        
-        console.log(`Enemy changed state to: ${newState}`);
-    }
-    
-    /**
-     * Update behavior in idle state
-     * @param {number} delta - Time delta
-     */
-    updateIdle(delta) {
-        // In idle state, enemy just slowly rotates
-        this.mesh.rotation.y += 0.5 * delta;
-    }
-    
-    /**
-     * Update behavior in chase state - with predictive targeting
-     * @param {number} delta - Time delta
-     * @param {THREE.Vector3} playerPosition - Current player position
-     */
-    updateChase(delta, playerPosition) {
-        const now = Date.now();
-        
-        // --- Predictive Targeting ---
-        // Use a prediction factor to estimate where the player will be in the near future.
-        const predictionFactor = 0.5; // seconds into the future
-        let predictedPosition = playerPosition.clone();
-        
-        // If available, use player's current speed and movement direction.
-        if (this.game && this.game.entityManager && this.game.entityManager.player) {
-            const player = this.game.entityManager.player;
-            // Assume player.getMovementDirection() returns a normalized THREE.Vector3.
-            const playerDirection = player.getMovementDirection();
-            predictedPosition.addScaledVector(playerDirection, player.currentSpeed * predictionFactor);
-        }
-        
-        // Use the predicted position as our target.
-        this.targetPosition = predictedPosition;
-        
-        // --- Path Recalculation ---
-        // Update the path if enough time has passed or if the target has moved significantly.
-        if (!this.currentPath || now - this.lastPathUpdate > this.updateInterval) {
-            this.currentPath = this.pathfinding.findPath(this.mesh.position, this.targetPosition);
+        // Reset path when state changes
+        if (newState === 'CHASE' || newState === 'FLANK') {
+            this.currentPath = [];
             this.currentPathIndex = 0;
-            this.lastPathUpdate = now;
+            this.lastPathUpdateTime = 0; // Force path recalculation
         }
         
-        // --- Aggressiveness Adjustment ---
-        // If the enemy is close to the predicted position, give a temporary speed boost.
-        const distanceToPredicted = this.mesh.position.distanceTo(this.targetPosition);
-        if (distanceToPredicted < 10) {
-            this.speed = this.BASE_SPEED * this.speedMultiplier * 1.2; // 20% speed boost
-        } else {
-            this.speed = this.BASE_SPEED * this.speedMultiplier;
+        // Special handling for stuck state
+        if (newState === 'STUCK') {
+            this.isStuck = true;
         }
         
-        // --- Movement and Obstacle Avoidance ---
-        // Move along the calculated path (using the existing moveAlongPath method).
-        this.moveAlongPath(delta);
-        
-        // --- Dynamic Jumping ---
-        // Increase jump probability slightly to add unpredictability.
-        if (this.canJump && this.jumpCooldown <= 0 && Math.random() < this.jumpProbability * 1.5) {
-            this.jump();
-        }
-        
-        // --- Facing the Target ---
-        // Always face toward the predicted target for a more aggressive pursuit.
-        this.lookAt(this.targetPosition);
+        console.log(`Enemy changed state from ${this.previousState} to ${newState}`);
     }
     
     /**
-     * Update behavior in flank state - try to circle around player
-     * @param {number} delta - Time delta
-     * @param {THREE.Vector3} playerPosition - Current player position
-     */
-    updateFlank(delta, playerPosition) {
-        const now = Date.now();
-        
-        // Check if it's time to recalculate flank position
-        if (now - this.lastPathUpdate > this.updateInterval * 2) {
-            this.calculateFlankPosition();
-            this.lastPathUpdate = now;
-        }
-        
-        // Move along the path
-        this.moveAlongPath(delta);
-        
-        // Face the player even while flanking
-        this.lookAt(playerPosition);
-        
-        // Higher chance to jump while flanking for unpredictability
-        if (this.canJump && this.jumpCooldown <= 0 && Math.random() < this.jumpProbability * 2) {
-            this.jump();
-        }
-    }
-    
-    /**
-     * Calculate a flanking position around the player
-     */
-    calculateFlankPosition() {
-        if (!this.targetPosition) return;
-        
-        // Calculate a position to the side of the player
-        const angle = Math.random() * Math.PI * 2; // Random angle
-        const distance = 10 + Math.random() * 10; // Random distance between 10-20 units
-        
-        const flankPosition = new THREE.Vector3(
-            this.targetPosition.x + Math.cos(angle) * distance,
-            this.targetPosition.y,
-            this.targetPosition.z + Math.sin(angle) * distance
-        );
-        
-        // Find a path to this flanking position
-        this.currentPath = this.pathfinding.findPath(
-            this.mesh.position,
-            flankPosition
-        );
-        this.currentPathIndex = 0;
-    }
-    
-    /**
-     * Update behavior in stuck state - try to get unstuck
+     * Execute behavior for spawn state
      * @param {number} delta - Time delta
      */
-    updateStuck(delta) {
-        // Try to jump to get unstuck
-        if (this.canJump && this.jumpCooldown <= 0) {
-            this.jump();
+    executeSpawnBehavior(delta) {
+        // Rise animation from ground
+        const spawnProgress = Math.min(1, (performance.now() / 1000 - this.stateTransitionTime) / 0.5);
+        
+        // Simple sine-based easing for smooth rise
+        const easedProgress = Math.sin(spawnProgress * Math.PI / 2);
+        
+        // Gradually rise to full height
+        this.mesh.scale.y = easedProgress;
+        this.mesh.position.y = this.HEIGHT / 2 * easedProgress;
+        
+        // Rotation for effect
+        this.mesh.rotation.y += delta * 2;
+    }
+    
+    /**
+     * Execute behavior for idle state
+     * @param {number} delta - Time delta
+     */
+    executeIdleBehavior(delta) {
+        // Slow rotation
+        this.mesh.rotation.y += delta * 0.5;
+        
+        // Slight bobbing motion
+        const time = performance.now() / 1000;
+        const bobHeight = Math.sin(time * 1.5) * 0.05;
+        this.mesh.position.y = this.HEIGHT / 2 + bobHeight;
+        
+        // Gradually slow down any existing velocity
+        this.currentVelocity.x *= 0.95;
+        this.currentVelocity.z *= 0.95;
+        
+        // Apply remaining velocity
+        this.mesh.position.x += this.currentVelocity.x * delta;
+        this.mesh.position.z += this.currentVelocity.z * delta;
+    }
+    
+    /**
+     * Execute chase behavior - directly pursue the player
+     * @param {number} delta - Time delta
+     * @param {THREE.Vector3} playerPosition - Player's position
+     * @param {number} playerSpeed - Player's current speed
+     */
+    executeChaseBehavior(delta, playerPosition, playerSpeed) {
+        const now = performance.now() / 1000;
+        
+        // Scale speed based on player speed for dynamic difficulty
+        const speedScaleFactor = 1.0 + Math.min(playerSpeed / 25, 0.75);
+        this.maxSpeed = Math.min(this.maxPossibleSpeed, this.BASE_SPEED * this.speedMultiplier * speedScaleFactor);
+        
+        // Recalculate path occasionally
+        if (now - this.lastPathUpdateTime > this.pathRecalculationInterval) {
+            // Prioritize updating based on distance to player
+            const distToPlayer = this.mesh.position.distanceTo(playerPosition);
+            const shouldUpdate = Math.random() < this.targetUpdatePriority * (1 + 10/distToPlayer);
+            
+            if (shouldUpdate) {
+                // Predict where player will be based on their velocity
+                const predictedPosition = this.predictPlayerPosition(playerPosition, playerSpeed);
+                
+                // Find a path to the predicted position
+                this.calculateNewPath(predictedPosition);
+                this.lastPathUpdateTime = now;
+            }
         }
         
-        // Try random movement to get unstuck
-        const randomAngle = Math.random() * Math.PI * 2;
-        const escapeDirection = new THREE.Vector3(
-            Math.cos(randomAngle),
-            0,
-            Math.sin(randomAngle)
-        );
+        // Move along current path
+        this.moveAlongPath(delta);
         
-        // Move in the random direction
+        // Always look toward the player directly
+        this.smoothLookAt(playerPosition, delta);
+    }
+    
+    /**
+     * Execute flanking behavior - try to circle around the player
+     * @param {number} delta - Time delta
+     * @param {THREE.Vector3} playerPosition - Player's position
+     */
+    executeFlankBehavior(delta, playerPosition) {
+        const now = performance.now() / 1000;
+        
+        // Recalculate flank position occasionally
+        if (now - this.lastPathUpdateTime > this.pathRecalculationInterval * 1.5) {
+            this.calculateFlankPosition(playerPosition);
+            this.lastPathUpdateTime = now;
+        }
+        
+        // Move along current path
+        this.moveAlongPath(delta);
+        
+        // Look at player while flanking for intimidation
+        this.smoothLookAt(playerPosition, delta);
+    }
+    
+    /**
+     * Execute behavior when stuck
+     * @param {number} delta - Time delta
+     */
+    executeStuckBehavior(delta) {
+        // Try to move in the escape direction
+        const escapeDistance = this.maxSpeed * 1.5 * delta;
+        
+        // Calculate potential new position
         const newPosition = new THREE.Vector3(
-            this.mesh.position.x + escapeDirection.x * this.speed * delta * 2, // Move faster to escape
+            this.mesh.position.x + this.stuckEscapeDirection.x * escapeDistance,
             this.mesh.position.y,
-            this.mesh.position.z + escapeDirection.z * this.speed * delta * 2
+            this.mesh.position.z + this.stuckEscapeDirection.z * escapeDistance
         );
         
-        // Check if new position is clear
+        // Try to move, if collision detected, change direction
         const canMove = !this.collisionUtils.checkObstacleCollision(
             this.scene, 
             newPosition, 
@@ -375,143 +455,257 @@ export class Enemy extends PhysicsEntity {
         );
         
         if (canMove) {
-            this.mesh.position.copy(newPosition);
+            // Apply movement with smooth acceleration
+            this.currentVelocity.x = this.stuckEscapeDirection.x * this.maxSpeed * 1.2;
+            this.currentVelocity.z = this.stuckEscapeDirection.z * this.maxSpeed * 1.2;
+            
+            this.mesh.position.x += this.currentVelocity.x * delta;
+            this.mesh.position.z += this.currentVelocity.z * delta;
+        } else {
+            // Change direction if we hit an obstacle
+            this.stuckEscapeDirection = this.generateEscapeDirection();
         }
         
-        // After a few attempts, transition back to chase mode
-        if (Math.random() < 0.1) { // 10% chance per update to exit stuck state
-            this.setState('CHASE');
-        }
+        // Add random rotation for unstuck attempts
+        this.mesh.rotation.y += (Math.random() - 0.5) * delta * 5;
     }
     
     /**
-     * Move along the calculated path
+     * Predict player's future position based on their current speed
+     * @param {THREE.Vector3} playerPosition - Current player position
+     * @param {number} playerSpeed - Player's current speed
+     * @returns {THREE.Vector3} Predicted future position
+     */
+    predictPlayerPosition(playerPosition, playerSpeed) {
+        const predictionTime = 0.5; // Predict 0.5 seconds ahead
+        
+        if (this.game && this.game.entityManager && this.game.entityManager.player) {
+            const player = this.game.entityManager.player;
+            const moveDirection = player.getMovementDirection();
+            
+            // Create predicted position based on player velocity
+            const predictedPos = playerPosition.clone();
+            predictedPos.addScaledVector(moveDirection, playerSpeed * predictionTime);
+            
+            return predictedPos;
+        }
+        
+        return playerPosition.clone(); // Fallback to current position if no data
+    }
+    
+    /**
+     * Calculate a new path to target
+     * @param {THREE.Vector3} targetPosition - Target position
+     */
+    calculateNewPath(targetPosition) {
+        // Store the previous target before updating
+        this.previousTarget.copy(this.actualTarget);
+        this.actualTarget.copy(targetPosition);
+        this.targetChangedTime = performance.now() / 1000;
+        
+        // Find path to target
+        this.currentPath = this.pathfinding.findPath(this.mesh.position, targetPosition);
+        this.currentPathIndex = 0;
+        this.hasReachedTarget = false;
+    }
+    
+    /**
+     * Calculate a flanking position around the player
+     * @param {THREE.Vector3} playerPosition - Player's position
+     */
+    calculateFlankPosition(playerPosition) {
+        // Create a position to the side of the player
+        const angle = Math.random() * Math.PI * 2; // Random angle around player
+        const distance = 8 + Math.random() * 7; // Random distance 8-15 units
+        
+        const flankPosition = new THREE.Vector3(
+            playerPosition.x + Math.cos(angle) * distance,
+            playerPosition.y,
+            playerPosition.z + Math.sin(angle) * distance
+        );
+        
+        // Recalculate path to flank position
+        this.calculateNewPath(flankPosition);
+    }
+    
+    /**
+     * Move along the calculated path with smooth acceleration and transitions
      * @param {number} delta - Time delta
      */
     moveAlongPath(delta) {
-        // If we have a path and haven't reached the end
-        if (this.currentPath && this.currentPath.length > 0 && this.currentPathIndex < this.currentPath.length) {
-            const targetPoint = this.currentPath[this.currentPathIndex];
+        if (!this.currentPath || this.currentPath.length === 0) {
+            return; // No path to follow
+        }
+        
+        // Get current target point
+        const targetPoint = this.getCurrentTargetPoint();
+        if (!targetPoint) return;
+        
+        // SMOOTH MOVEMENT IMPLEMENTATION
+        // Calculate normalized direction to target
+        const direction = new THREE.Vector3()
+            .subVectors(targetPoint, this.mesh.position)
+            .normalize();
+        
+        // Apply acceleration toward target with smooth acceleration
+        const targetVelocityX = direction.x * this.maxSpeed;
+        const targetVelocityZ = direction.z * this.maxSpeed;
+        
+        // Smooth acceleration toward target velocity
+        this.currentVelocity.x += (targetVelocityX - this.currentVelocity.x) * this.acceleration * delta;
+        this.currentVelocity.z += (targetVelocityZ - this.currentVelocity.z) * this.acceleration * delta;
+        
+        // Calculate potential new position
+        const newPosition = new THREE.Vector3(
+            this.mesh.position.x + this.currentVelocity.x * delta,
+            this.mesh.position.y,
+            this.mesh.position.z + this.currentVelocity.z * delta
+        );
+        
+        // Check for collisions with obstacles
+        const canMove = !this.collisionUtils.checkObstacleCollision(
+            this.scene, 
+            newPosition, 
+            this.WIDTH / 2
+        );
+        
+        // Apply movement if no obstacle in the way
+        if (canMove) {
+            this.mesh.position.copy(newPosition);
+        } else {
+            // Hit an obstacle, try to find a way around
+            this.avoidObstacle(delta, direction);
+        }
+        
+        // Check if we've reached the current target point
+        const distanceToTarget = this.mesh.position.distanceTo(targetPoint);
+        if (distanceToTarget < 1.0) {
+            this.currentPathIndex++;
             
-            // Get direction to the next point
-            const direction = new THREE.Vector3()
-                .subVectors(targetPoint, this.mesh.position)
-                .normalize();
-            
-            // Calculate potential new position
-            const newPosition = new THREE.Vector3(
-                this.mesh.position.x + direction.x * this.speed * delta,
-                this.mesh.position.y,
-                this.mesh.position.z + direction.z * this.speed * delta
-            );
-            
-            // Check for collisions with obstacles
-            const canMove = !this.collisionUtils.checkObstacleCollision(
-                this.scene, 
-                newPosition, 
-                this.WIDTH / 2
-            );
-            
-            // Move the enemy if no obstacles in the way
-            if (canMove) {
-                this.mesh.position.copy(newPosition);
-                
-                // Check if we've reached the current path point (within a small threshold)
-                const distanceToTarget = this.mesh.position.distanceTo(targetPoint);
-                if (distanceToTarget < 1.0) {
-                    this.currentPathIndex++;
-                }
-            } else {
-                // Try to find a way around obstacles
-                this.avoidObstacle(delta, direction);
-            }
-        } else if (this.targetPosition) {
-            // Direct movement if no path or reached end of path
-            const direction = new THREE.Vector3()
-                .subVectors(this.targetPosition, this.mesh.position)
-                .normalize();
-            
-            // Calculate potential new position
-            const newPosition = new THREE.Vector3(
-                this.mesh.position.x + direction.x * this.speed * delta,
-                this.mesh.position.y,
-                this.mesh.position.z + direction.z * this.speed * delta
-            );
-            
-            // Check for collisions
-            const canMove = !this.collisionUtils.checkObstacleCollision(
-                this.scene, 
-                newPosition, 
-                this.WIDTH / 2
-            );
-            
-            if (canMove) {
-                this.mesh.position.copy(newPosition);
-            } else {
-                this.avoidObstacle(delta, direction);
+            // Check if we've reached the end of the path
+            if (this.currentPathIndex >= this.currentPath.length) {
+                this.hasReachedTarget = true;
             }
         }
     }
     
     /**
-     * Make the enemy perform a jump
+     * Get current target point with smooth transitions
+     * @returns {THREE.Vector3} Current target point
      */
-    jump() {
-        if (!this.canJump) return;
+    getCurrentTargetPoint() {
+        // If we have a valid path and index
+        if (this.currentPath && this.currentPath.length > 0 && 
+            this.currentPathIndex < this.currentPath.length) {
+            return this.currentPath[this.currentPathIndex];
+        }
         
-        this.velocity.y = this.jumpForce;
-        this.canJump = false;
-        this.jumpCooldown = 1.5; // 1.5 seconds cooldown between jumps
+        // If we've reached the end of path, return final target
+        if (this.hasReachedTarget) {
+            return this.actualTarget;
+        }
+        
+        // Fallback to direct movement toward player
+        return this.actualTarget;
     }
     
     /**
-     * Simple obstacle avoidance logic
+     * Avoid obstacles by finding an alternative direction
      * @param {number} delta - Time delta
      * @param {THREE.Vector3} direction - Current movement direction
      */
     avoidObstacle(delta, direction) {
-        // Try moving perpendicular to the current direction
+        // Generate perpendicular directions for navigation
         const leftDirection = new THREE.Vector3(-direction.z, 0, direction.x).normalize();
         const rightDirection = new THREE.Vector3(direction.z, 0, -direction.x).normalize();
         
-        // Try moving to the left
-        const leftPosition = new THREE.Vector3(
-            this.mesh.position.x + leftDirection.x * this.speed * delta,
-            this.mesh.position.y,
-            this.mesh.position.z + leftDirection.z * this.speed * delta
-        );
+        // Try positions in multiple directions with different mixing of forward + side movement
+        const attemptPositions = [
+            // Left side attempts
+            new THREE.Vector3(
+                this.mesh.position.x + (leftDirection.x * 0.8 + direction.x * 0.2) * this.maxSpeed * delta,
+                this.mesh.position.y,
+                this.mesh.position.z + (leftDirection.z * 0.8 + direction.z * 0.2) * this.maxSpeed * delta
+            ),
+            // Right side attempts
+            new THREE.Vector3(
+                this.mesh.position.x + (rightDirection.x * 0.8 + direction.x * 0.2) * this.maxSpeed * delta,
+                this.mesh.position.y,
+                this.mesh.position.z + (rightDirection.z * 0.8 + direction.z * 0.2) * this.maxSpeed * delta
+            ),
+            // Left with more forward
+            new THREE.Vector3(
+                this.mesh.position.x + (leftDirection.x * 0.5 + direction.x * 0.5) * this.maxSpeed * delta,
+                this.mesh.position.y,
+                this.mesh.position.z + (leftDirection.z * 0.5 + direction.z * 0.5) * this.maxSpeed * delta
+            ),
+            // Right with more forward
+            new THREE.Vector3(
+                this.mesh.position.x + (rightDirection.x * 0.5 + direction.x * 0.5) * this.maxSpeed * delta,
+                this.mesh.position.y,
+                this.mesh.position.z + (rightDirection.z * 0.5 + direction.z * 0.5) * this.maxSpeed * delta
+            ),
+            // Pure left
+            new THREE.Vector3(
+                this.mesh.position.x + leftDirection.x * this.maxSpeed * delta,
+                this.mesh.position.y,
+                this.mesh.position.z + leftDirection.z * this.maxSpeed * delta
+            ),
+            // Pure right
+            new THREE.Vector3(
+                this.mesh.position.x + rightDirection.x * this.maxSpeed * delta,
+                this.mesh.position.y,
+                this.mesh.position.z + rightDirection.z * this.maxSpeed * delta
+            )
+        ];
         
-        // Try moving to the right
-        const rightPosition = new THREE.Vector3(
-            this.mesh.position.x + rightDirection.x * this.speed * delta,
-            this.mesh.position.y,
-            this.mesh.position.z + rightDirection.z * this.speed * delta
-        );
-        
-        // Check which direction is clearer
-        const leftClear = !this.collisionUtils.checkObstacleCollision(this.scene, leftPosition, this.WIDTH / 2);
-        const rightClear = !this.collisionUtils.checkObstacleCollision(this.scene, rightPosition, this.WIDTH / 2);
-        
-        if (leftClear) {
-            this.mesh.position.copy(leftPosition);
-        } else if (rightClear) {
-            this.mesh.position.copy(rightPosition);
-        } else if (this.canJump && this.jumpCooldown <= 0) {
-            // If both horizontal directions are blocked, try jumping
-            this.jump();
+        // Try each position and take the first clear one
+        for (const position of attemptPositions) {
+            const clear = !this.collisionUtils.checkObstacleCollision(this.scene, position, this.WIDTH / 2);
+            if (clear) {
+                // Update velocity to match chosen direction for smooth momentum
+                this.currentVelocity.x = (position.x - this.mesh.position.x) / delta;
+                this.currentVelocity.z = (position.z - this.mesh.position.z) / delta;
+                
+                // Move to the clear position
+                this.mesh.position.copy(position);
+                return;
+            }
         }
+        
+        // If all attempts failed, slow down instead of coming to an abrupt stop
+        this.currentVelocity.x *= 0.8;
+        this.currentVelocity.z *= 0.8;
+        
+        // Increment stuck counter as all avoidance attempts failed
+        this.stuckCounter += 0.5;
     }
     
     /**
-     * Make the enemy face a specific position
-     * @param {THREE.Vector3} position - Position to look at
+     * Smoothly look at a target position
+     * @param {THREE.Vector3} targetPosition - Position to look at
+     * @param {number} delta - Time delta
      */
-    lookAt(position) {
-        this.mesh.lookAt(new THREE.Vector3(
-            position.x, 
-            this.mesh.position.y, 
-            position.z
-        ));
+    smoothLookAt(targetPosition, delta) {
+        // Calculate target rotation
+        const direction = new THREE.Vector3()
+            .subVectors(targetPosition, this.mesh.position)
+            .normalize();
+        
+        // Calculate target angle
+        const targetAngle = Math.atan2(direction.x, direction.z);
+        
+        // Calculate shortest angle difference (handling the -π to π wrap)
+        let angleDiff = targetAngle - this.mesh.rotation.y;
+        if (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+        if (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+        
+        // Apply smooth rotation with rate limiting
+        const maxRotation = this.turnRate * delta;
+        const rotationAmount = Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), maxRotation);
+        
+        // Update rotation
+        this.mesh.rotation.y += rotationAmount;
     }
     
     /**

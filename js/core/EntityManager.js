@@ -1,4 +1,72 @@
-/**
+    /**
+     * Find a position to reposition an enemy that's better than current but not too close to player
+     * @param {THREE.Vector3} currentPosition - Enemy's current position
+     * @param {THREE.Vector3} playerPosition - Player's current position
+     * @returns {THREE.Vector3} New position for enemy
+     */
+    findSafeRepositionPoint(currentPosition, playerPosition) {
+        // First try to find a position closer to player but not too close
+        const currentDistanceToPlayer = currentPosition.distanceTo(playerPosition);
+        const targetDistance = Math.max(25, currentDistanceToPlayer * 0.7); // Get closer but keep distance
+        
+        // Direction vector from current to player
+        const directionToPlayer = new THREE.Vector3()
+            .subVectors(playerPosition, currentPosition)
+            .normalize();
+        
+        // Find position along the direction to player, but at the target distance
+        let newPosition = new THREE.Vector3()
+            .copy(playerPosition)
+            .sub(directionToPlayer.clone().multiplyScalar(targetDistance));
+        
+        // Create a small random offset for natural variation
+        const randomAngle = Math.random() * Math.PI * 0.4 - Math.PI * 0.2; // -20° to +20°
+        const perpendicular = new THREE.Vector3(-directionToPlayer.z, 0, directionToPlayer.x);
+        const rotatedDirection = new THREE.Vector3().copy(directionToPlayer);
+        
+        // Apply rotation around Y axis
+        rotatedDirection.x = directionToPlayer.x * Math.cos(randomAngle) - directionToPlayer.z * Math.sin(randomAngle);
+        rotatedDirection.z = directionToPlayer.x * Math.sin(randomAngle) + directionToPlayer.z * Math.cos(randomAngle);
+        
+        // Adjust position with the rotated direction
+        newPosition = new THREE.Vector3()
+            .copy(playerPosition)
+            .sub(rotatedDirection.multiplyScalar(targetDistance));
+        
+        // Ensure the position is clear of obstacles
+        for (let attempt = 0; attempt < 10; attempt++) {
+            // Check if the position is clear
+            const isClear = !this.game.sceneManager.scene.children.some(child => {
+                if (child.userData && child.userData.isObstacle) {
+                    // Quick check using bounding box
+                    const obstacleBbox = new THREE.Box3().setFromObject(child);
+                    const point = new THREE.Vector3(newPosition.x, 1, newPosition.z);
+                    return obstacleBbox.containsPoint(point);
+                }
+                return false;
+            });
+            
+            if (isClear) {
+                return newPosition; // Success, position is clear
+            }
+            
+            // Try with a different angle
+            const newAngle = Math.random() * Math.PI * 2;
+            const newOffset = Math.random() * 10;
+            newPosition.x = playerPosition.x + Math.cos(newAngle) * (targetDistance + newOffset);
+            newPosition.z = playerPosition.z + Math.sin(newAngle) * (targetDistance + newOffset);
+        }
+        
+        // If no clear position found, use the fallback approach
+        const fallbackDistance = targetDistance * 1.2;
+        const fallbackAngle = Math.random() * Math.PI * 2;
+        
+        return new THREE.Vector3(
+            playerPosition.x + Math.cos(fallbackAngle) * fallbackDistance,
+            0,
+            playerPosition.z + Math.sin(fallbackAngle) * fallbackDistance
+        );
+    }/**
  * EntityManager - Manages game entities like player and enemies
  */
 import { Player } from '../entities/Player.js';
@@ -297,22 +365,37 @@ export class EntityManager {
             this.spawnEnemies(enemiesToSpawn);
         }
         
-        // Check if any enemies are too far away and need to be respawned
+        // Check if any enemies are completely stuck and need help (never teleport near player)
         if (this.player) {
             const playerPosition = new THREE.Vector3();
             this.player.yawObject.getWorldPosition(playerPosition);
             
-            const MAX_ENEMY_DISTANCE = 100; // Maximum distance before respawning
+            const MAX_ENEMY_DISTANCE = 100; // Maximum distance before considering repositioning
             
-            for (let i = this.enemies.length - 1; i >= 0; i--) {
+            for (let i = 0; i < this.enemies.length; i++) {
                 const enemy = this.enemies[i];
                 const distanceToPlayer = enemy.mesh.position.distanceTo(playerPosition);
                 
+                // Only reposition if enemy is too far away
                 if (distanceToPlayer > MAX_ENEMY_DISTANCE) {
-                    console.log('Enemy too far away, respawning...');
-                    enemy.destroy();
-                    this.enemies.splice(i, 1);
-                    this.createEnemy();
+                    // Don't destroy and recreate - find a new position that's better but not too close
+                    const newPosition = this.findSafeRepositionPoint(enemy.mesh.position, playerPosition);
+                    
+                    // Smoothly reset enemy at new location
+                    enemy.mesh.position.copy(newPosition);
+                    enemy.mesh.position.y = enemy.HEIGHT / 2;
+                    
+                    // Reset enemy state
+                    enemy.setState('SPAWN');
+                    
+                    // Reset paths and targets
+                    enemy.currentPath = [];
+                    enemy.currentPathIndex = 0;
+                    enemy.previousTarget.copy(newPosition);
+                    enemy.actualTarget.copy(newPosition);
+                    
+                    // Log the action
+                    console.log(`Enemy repositioned to better location at distance ${newPosition.distanceTo(playerPosition).toFixed(2)}`);
                 }
             }
         }
@@ -372,5 +455,75 @@ export class EntityManager {
             playerDeaths: this.playerDeaths,
             enemiesKilled: this.enemiesKilled
         };
+    }
+    
+    /**
+     * Find a position to reposition an enemy that's better than current but not too close to player
+     * @param {THREE.Vector3} currentPosition - Enemy's current position
+     * @param {THREE.Vector3} playerPosition - Player's current position
+     * @returns {THREE.Vector3} New position for enemy
+     */
+    findSafeRepositionPoint(currentPosition, playerPosition) {
+        // First try to find a position closer to player but not too close
+        const currentDistanceToPlayer = currentPosition.distanceTo(playerPosition);
+        const targetDistance = Math.max(25, currentDistanceToPlayer * 0.7); // Get closer but keep distance
+        
+        // Direction vector from current to player
+        const directionToPlayer = new THREE.Vector3()
+            .subVectors(playerPosition, currentPosition)
+            .normalize();
+        
+        // Find position along the direction to player, but at the target distance
+        let newPosition = new THREE.Vector3()
+            .copy(playerPosition)
+            .sub(directionToPlayer.clone().multiplyScalar(targetDistance));
+        
+        // Create a small random offset for natural variation
+        const randomAngle = Math.random() * Math.PI * 0.4 - Math.PI * 0.2; // -20° to +20°
+        const perpendicular = new THREE.Vector3(-directionToPlayer.z, 0, directionToPlayer.x);
+        const rotatedDirection = new THREE.Vector3().copy(directionToPlayer);
+        
+        // Apply rotation around Y axis
+        rotatedDirection.x = directionToPlayer.x * Math.cos(randomAngle) - directionToPlayer.z * Math.sin(randomAngle);
+        rotatedDirection.z = directionToPlayer.x * Math.sin(randomAngle) + directionToPlayer.z * Math.cos(randomAngle);
+        
+        // Adjust position with the rotated direction
+        newPosition = new THREE.Vector3()
+            .copy(playerPosition)
+            .sub(rotatedDirection.multiplyScalar(targetDistance));
+        
+        // Ensure the position is clear of obstacles
+        for (let attempt = 0; attempt < 10; attempt++) {
+            // Check if the position is clear
+            const isClear = !this.game.sceneManager.scene.children.some(child => {
+                if (child.userData && child.userData.isObstacle) {
+                    // Quick check using bounding box
+                    const obstacleBbox = new THREE.Box3().setFromObject(child);
+                    const point = new THREE.Vector3(newPosition.x, 1, newPosition.z);
+                    return obstacleBbox.containsPoint(point);
+                }
+                return false;
+            });
+            
+            if (isClear) {
+                return newPosition; // Success, position is clear
+            }
+            
+            // Try with a different angle
+            const newAngle = Math.random() * Math.PI * 2;
+            const newOffset = Math.random() * 10;
+            newPosition.x = playerPosition.x + Math.cos(newAngle) * (targetDistance + newOffset);
+            newPosition.z = playerPosition.z + Math.sin(newAngle) * (targetDistance + newOffset);
+        }
+        
+        // If no clear position found, use the fallback approach
+        const fallbackDistance = targetDistance * 1.2;
+        const fallbackAngle = Math.random() * Math.PI * 2;
+        
+        return new THREE.Vector3(
+            playerPosition.x + Math.cos(fallbackAngle) * fallbackDistance,
+            0,
+            playerPosition.z + Math.sin(fallbackAngle) * fallbackDistance
+        );
     }
 }
