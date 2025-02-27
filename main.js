@@ -1,5 +1,6 @@
 // Global variables
 let scene, camera, renderer;
+let player; // Player object that will hold the camera
 let canvas;
 let instructions, hud, debugInfo;
 
@@ -13,9 +14,8 @@ let isJumping = false;
 let isBhopping = false;
 let jumpTime = 0;
 let lastJumpTime = 0;
-// Increase bhop window to make it more forgiving
-const BHOP_WINDOW = 400; // ms window to perform a successful bhop (increased from 200)
-const BHOP_BOOST = 1.8; // Speed multiplier for successful bhop (increased from 1.5)
+const BHOP_WINDOW = 450; // ms window to perform a successful bhop
+const BHOP_BOOST = 2.0; // Speed multiplier for successful bhop
 
 // Physics variables
 let velocity = new THREE.Vector3();
@@ -23,25 +23,29 @@ const direction = new THREE.Vector3();
 const playerHeight = 2;
 const gravity = 30;
 const jumpForce = 12;
-const playerSpeed = 12; // Increased base speed
+const playerSpeed = 12;
 
 // Movement control variables for smoother acceleration/deceleration
 let currentSpeed = 0;
-const acceleration = 80;
-const deceleration = 60;
-const maxSpeed = 20;
+const acceleration = 100; // Increased for more responsive acceleration
+const deceleration = 80;  // Increased for more responsive deceleration
+const maxSpeed = 24;      // Maximum possible speed
 
 // FOV variables
 const defaultFOV = 75;
-const runningFOV = 85;
-const fovChangeSpeed = 8; // Increased for more responsive FOV changes
+const runningFOV = 90;
+const fovChangeSpeed = 10;
 
 // Head bobbing variables
 let bobTimer = 0;
-const bobAmplitude = 0.05;
-const bobFrequency = 10;
+const bobAmplitude = 0.08; // Increased for more noticeable effect
+const bobFrequency = 12;   // Slightly increased frequency
 let bobActive = false;
 let bobHeight = 0;
+
+// Mouse look variables
+let mouseSensitivity = 0.002;
+let pitchObject, yawObject;
 
 // Enemy variables
 let enemies = [];
@@ -49,10 +53,6 @@ const ENEMY_SPEED = 5;
 const ENEMY_HEIGHT = 2.5;
 const ENEMY_SPAWN_DISTANCE = 30;
 const MAX_ENEMIES = 3;
-
-// Camera control variables
-let cameraRotation = new THREE.Euler(0, 0, 0, 'YXZ');
-const cameraSensitivity = 0.002;
 
 // Initialize the scene, camera, and renderer
 function init() {
@@ -68,7 +68,22 @@ function init() {
 
     // Create the camera (first-person perspective)
     camera = new THREE.PerspectiveCamera(defaultFOV, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.y = playerHeight;
+    
+    // Set up player object as a container for the camera
+    player = new THREE.Object3D();
+    scene.add(player);
+    
+    // Add pitch object for vertical rotation
+    pitchObject = new THREE.Object3D();
+    pitchObject.add(camera);
+    
+    // Add yaw object for horizontal rotation
+    yawObject = new THREE.Object3D();
+    yawObject.position.y = playerHeight;
+    yawObject.add(pitchObject);
+    
+    // Add player to the scene
+    player.add(yawObject);
 
     // Create the renderer
     renderer = new THREE.WebGLRenderer({
@@ -77,18 +92,27 @@ function init() {
     });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Better shadow quality
 
     // Add lighting
-    const ambientLight = new THREE.AmbientLight(0x404040); // Soft white light
+    const ambientLight = new THREE.AmbientLight(0x6b6b6b); // Brighter ambient light
     scene.add(ambientLight);
 
     const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
     directionalLight.position.set(5, 10, 7.5);
     directionalLight.castShadow = true;
+    // Improve shadow quality
+    directionalLight.shadow.mapSize.width = 1024;
+    directionalLight.shadow.mapSize.height = 1024;
+    directionalLight.shadow.camera.near = 0.5;
+    directionalLight.shadow.camera.far = 50;
     scene.add(directionalLight);
 
     // Create a ground plane
     createGround();
+    
+    // Add some obstacles for better gameplay
+    createObstacles();
     
     // Spawn initial enemies
     spawnEnemies(MAX_ENEMIES);
@@ -100,40 +124,102 @@ function init() {
     animate();
 }
 
-// Create the ground plane - this time ensuring it's correctly positioned
+// Create the ground plane
 function createGround() {
-    // Increased ground size to 200x200
-    const groundGeometry = new THREE.PlaneGeometry(200, 200);
+    // Create textured ground
+    const groundSize = 200;
+    
+    // Create a grid texture for the ground
+    const gridHelper = new THREE.GridHelper(groundSize, 20, 0x000000, 0x444444);
+    gridHelper.position.y = 0.01; // Slightly above ground to prevent z-fighting
+    scene.add(gridHelper);
+    
+    // Create the main ground
+    const groundGeometry = new THREE.PlaneGeometry(groundSize, groundSize);
     const groundMaterial = new THREE.MeshStandardMaterial({
-        color: 0x228B22, // Forest green
-        roughness: 0.8
+        color: 0x3b7d4e,
+        roughness: 0.8,
+        metalness: 0.1
     });
     
     const ground = new THREE.Mesh(groundGeometry, groundMaterial);
-    
-    // Ensure the ground is properly rotated to be horizontal
     ground.rotation.x = -Math.PI / 2;
-    ground.position.y = 0; // Explicitly set Y position to 0
-    
-    // Create and add a separate coordinate system for the ground
-    // This ensures it won't be affected by camera rotation
-    const groundParent = new THREE.Object3D();
-    groundParent.add(ground);
-    
-    // Add to scene with a specific name for reference
-    groundParent.name = 'groundParent';
-    ground.name = 'ground';
+    ground.position.y = 0;
     ground.receiveShadow = true;
+    ground.name = 'ground';
+    scene.add(ground);
+}
+
+// Create some obstacles for more interesting gameplay
+function createObstacles() {
+    // Create a few boxes scattered around
+    for (let i = 0; i < 10; i++) {
+        const size = 2 + Math.random() * 3;
+        const height = 1 + Math.random() * 4;
+        
+        const boxGeometry = new THREE.BoxGeometry(size, height, size);
+        const boxMaterial = new THREE.MeshStandardMaterial({
+            color: 0x808080 + Math.random() * 0x7f7f7f,
+            roughness: 0.7,
+            metalness: 0.2
+        });
+        
+        const box = new THREE.Mesh(boxGeometry, boxMaterial);
+        
+        // Random position, but keep away from center (player spawn)
+        const distance = 15 + Math.random() * 60;
+        const angle = Math.random() * Math.PI * 2;
+        box.position.x = Math.cos(angle) * distance;
+        box.position.z = Math.sin(angle) * distance;
+        box.position.y = height / 2;
+        
+        box.castShadow = true;
+        box.receiveShadow = true;
+        
+        // Add collision box
+        box.userData.isObstacle = true;
+        
+        scene.add(box);
+    }
     
-    scene.add(groundParent);
+    // Create some ramps
+    for (let i = 0; i < 5; i++) {
+        const rampGeometry = new THREE.BoxGeometry(8, 4, 12);
+        const rampMaterial = new THREE.MeshStandardMaterial({
+            color: 0xccaa88,
+            roughness: 0.5
+        });
+        
+        const ramp = new THREE.Mesh(rampGeometry, rampMaterial);
+        
+        // Random position, but keep away from center
+        const distance = 20 + Math.random() * 40;
+        const angle = Math.random() * Math.PI * 2;
+        ramp.position.x = Math.cos(angle) * distance;
+        ramp.position.z = Math.sin(angle) * distance;
+        ramp.position.y = 2;
+        
+        // Rotate ramp to create slope
+        ramp.rotation.x = -Math.PI / 12; // 15 degrees
+        ramp.rotation.y = Math.random() * Math.PI * 2;
+        
+        ramp.castShadow = true;
+        ramp.receiveShadow = true;
+        
+        // Add collision tag
+        ramp.userData.isObstacle = true;
+        
+        scene.add(ramp);
+    }
 }
 
 // Create and spawn enemies
 function createEnemy() {
-    // Create enemy mesh
+    // Create more interesting enemy geometry
     const enemyGeometry = new THREE.BoxGeometry(1.5, ENEMY_HEIGHT, 1);
     const enemyMaterial = new THREE.MeshStandardMaterial({
         color: 0xff0000,  // Red color for the enemy
+        emissive: 0x550000, // Slight glow
         roughness: 0.5
     });
     
@@ -141,8 +227,8 @@ function createEnemy() {
     
     // Position the enemy randomly around the player, but at a distance
     const angle = Math.random() * Math.PI * 2;
-    enemy.position.x = camera.position.x + Math.cos(angle) * ENEMY_SPAWN_DISTANCE;
-    enemy.position.z = camera.position.z + Math.sin(angle) * ENEMY_SPAWN_DISTANCE;
+    enemy.position.x = yawObject.position.x + Math.cos(angle) * ENEMY_SPAWN_DISTANCE;
+    enemy.position.z = yawObject.position.z + Math.sin(angle) * ENEMY_SPAWN_DISTANCE;
     enemy.position.y = ENEMY_HEIGHT / 2;
     
     enemy.castShadow = true;
@@ -173,30 +259,98 @@ function spawnEnemies(count) {
 // Update enemy positions and AI
 function updateEnemies(delta) {
     enemies.forEach(enemy => {
+        // Get player position
+        const playerPosition = new THREE.Vector3();
+        yawObject.getWorldPosition(playerPosition);
+        
         // Update the enemy's position to move towards the player
         const direction = new THREE.Vector3();
-        direction.subVectors(camera.position, enemy.mesh.position).normalize();
+        direction.subVectors(playerPosition, enemy.mesh.position).normalize();
         
         // Don't change the y-position (keep enemy on the ground)
         direction.y = 0;
         
-        // Move the enemy towards the player
-        enemy.mesh.position.x += direction.x * enemy.speed * delta;
-        enemy.mesh.position.z += direction.z * enemy.speed * delta;
+        // Calculate potential new position
+        const newPosition = new THREE.Vector3(
+            enemy.mesh.position.x + direction.x * enemy.speed * delta,
+            enemy.mesh.position.y,
+            enemy.mesh.position.z + direction.z * enemy.speed * delta
+        );
+        
+        // Check for collisions with obstacles
+        const canMove = !checkObstacleCollision(enemy.mesh.position, newPosition, 1.5);
+        
+        // Move the enemy towards the player if no obstacles in the way
+        if (canMove) {
+            enemy.mesh.position.copy(newPosition);
+        } else {
+            // Simple obstacle avoidance - try to move around the obstacle
+            const leftDirection = new THREE.Vector3(-direction.z, 0, direction.x).normalize();
+            const rightDirection = new THREE.Vector3(direction.z, 0, -direction.x).normalize();
+            
+            // Try moving to the left
+            const leftPosition = new THREE.Vector3(
+                enemy.mesh.position.x + leftDirection.x * enemy.speed * delta,
+                enemy.mesh.position.y,
+                enemy.mesh.position.z + leftDirection.z * enemy.speed * delta
+            );
+            
+            // Try moving to the right
+            const rightPosition = new THREE.Vector3(
+                enemy.mesh.position.x + rightDirection.x * enemy.speed * delta,
+                enemy.mesh.position.y,
+                enemy.mesh.position.z + rightDirection.z * enemy.speed * delta
+            );
+            
+            // Check which direction is clearer
+            const leftClear = !checkObstacleCollision(enemy.mesh.position, leftPosition, 1.5);
+            const rightClear = !checkObstacleCollision(enemy.mesh.position, rightPosition, 1.5);
+            
+            if (leftClear) {
+                enemy.mesh.position.copy(leftPosition);
+            } else if (rightClear) {
+                enemy.mesh.position.copy(rightPosition);
+            }
+        }
         
         // Make the enemy face the player
-        enemy.mesh.lookAt(new THREE.Vector3(camera.position.x, enemy.mesh.position.y, camera.position.z));
+        enemy.mesh.lookAt(new THREE.Vector3(playerPosition.x, enemy.mesh.position.y, playerPosition.z));
         
         // Update the enemy's bounding box
         enemy.boundingBox.setFromObject(enemy.mesh);
         
         // Check for collision with player
-        const playerBoundingBox = new THREE.Box3().setFromObject(camera);
+        const playerPosition2 = new THREE.Vector3();
+        yawObject.getWorldPosition(playerPosition2);
+        const playerBoundingBox = new THREE.Box3().setFromCenterAndSize(
+            playerPosition2,
+            new THREE.Vector3(1, 2, 1)
+        );
+        
         if (enemy.boundingBox.intersectsBox(playerBoundingBox)) {
             console.log('Player collided with enemy!');
             // TODO: implement game over or damage logic
         }
     });
+}
+
+// Helper function to check for collisions with obstacles
+function checkObstacleCollision(currentPos, newPos, radius) {
+    // Create a raycaster to check for collisions
+    const direction = new THREE.Vector3().subVectors(newPos, currentPos).normalize();
+    const raycaster = new THREE.Raycaster(currentPos, direction);
+    
+    // Get all potential obstacles
+    const obstacles = scene.children.filter(child => 
+        child.userData && child.userData.isObstacle
+    );
+    
+    // Check for intersections
+    const intersections = raycaster.intersectObjects(obstacles);
+    
+    // If there's an intersection within our movement distance plus safety radius, return true
+    const moveDist = currentPos.distanceTo(newPos);
+    return intersections.length > 0 && intersections[0].distance < moveDist + radius;
 }
 
 // Set up event listeners for controls
@@ -230,7 +384,7 @@ function lockChangeAlert() {
     }
 }
 
-// Improved mouse handling for smoother camera control
+// Handle mouse movement for camera rotation - improved version
 function onMouseMove(event) {
     if (document.pointerLockElement !== canvas) return;
     
@@ -238,15 +392,12 @@ function onMouseMove(event) {
     const movementX = event.movementX || 0;
     const movementY = event.movementY || 0;
     
-    // Update camera rotation with Euler angles for more precise control
-    cameraRotation.y -= movementX * cameraSensitivity;
+    // Apply to yaw (left/right)
+    yawObject.rotation.y -= movementX * mouseSensitivity;
     
-    // Limit vertical rotation to prevent flipping
-    cameraRotation.x -= movementY * cameraSensitivity;
-    cameraRotation.x = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, cameraRotation.x));
-    
-    // Apply rotation to camera
-    camera.quaternion.setFromEuler(cameraRotation);
+    // Apply to pitch (up/down) with constraints
+    pitchObject.rotation.x -= movementY * mouseSensitivity;
+    pitchObject.rotation.x = Math.max(-Math.PI/2 + 0.01, Math.min(Math.PI/2 - 0.01, pitchObject.rotation.x));
 }
 
 // Handle key down events
@@ -318,18 +469,71 @@ function updateHeadBob(delta, speed) {
         // Only bob when moving and grounded
         bobActive = true;
         bobTimer += delta * speed * bobFrequency;
-        bobHeight = Math.sin(bobTimer) * bobAmplitude;
+        
+        // More natural bobbing with combined vertical and horizontal movement
+        const verticalBob = Math.sin(bobTimer) * bobAmplitude;
+        const lateralBob = Math.sin(bobTimer * 0.5) * bobAmplitude * 0.5;
+        
+        // Apply bobbing to the camera
+        camera.position.y = verticalBob;
+        camera.position.x = lateralBob;
     } else {
         bobActive = false;
-        bobHeight = 0;
+        
+        // Smoothly reset camera position
+        camera.position.y *= 0.8;
+        camera.position.x *= 0.8;
+        
+        if (Math.abs(camera.position.y) < 0.01) camera.position.y = 0;
+        if (Math.abs(camera.position.x) < 0.01) camera.position.x = 0;
+        
         // Gradually reset bob timer when not moving
         bobTimer = 0;
     }
+}
+
+// Get movement direction relative to camera orientation
+function getMovementDirection() {
+    // Start with the basic direction from input
+    direction.z = Number(moveBackward) - Number(moveForward);
+    direction.x = Number(moveRight) - Number(moveLeft);
     
-    // Apply head bob to camera
-    if (canJump) { // Only apply bobbing when on ground
-        camera.position.y = playerHeight + bobHeight;
+    // Only normalize if we have some movement
+    if (direction.x !== 0 || direction.z !== 0) {
+        direction.normalize();
     }
+    
+    // Convert direction to be relative to camera orientation
+    const rotationMatrix = new THREE.Matrix4();
+    rotationMatrix.makeRotationY(yawObject.rotation.y);
+    
+    direction.applyMatrix4(rotationMatrix);
+    
+    return direction;
+}
+
+// Check for collision with obstacles
+function checkCollisions(newPosition, radius) {
+    // Get all obstacles
+    const obstacles = scene.children.filter(child => 
+        child.userData && child.userData.isObstacle
+    );
+    
+    // Create a bounding sphere for the player
+    const playerSphere = new THREE.Sphere(newPosition, radius);
+    
+    // Check each obstacle
+    for (const obstacle of obstacles) {
+        // Create a bounding box for the obstacle
+        const obstacleBounds = new THREE.Box3().setFromObject(obstacle);
+        
+        // Check for intersection
+        if (obstacleBounds.intersectsSphere(playerSphere)) {
+            return true; // Collision detected
+        }
+    }
+    
+    return false; // No collision
 }
 
 // Update player movement with improved physics
@@ -341,6 +545,7 @@ function updatePlayer(delta) {
     let targetSpeed = 0;
     if (moveForward || moveBackward || moveLeft || moveRight) {
         targetSpeed = isBhopping ? playerSpeed * BHOP_BOOST : playerSpeed;
+        targetSpeed = Math.min(targetSpeed, maxSpeed);
     }
     
     // Smooth acceleration and deceleration
@@ -350,37 +555,54 @@ function updatePlayer(delta) {
         currentSpeed = Math.max(targetSpeed, currentSpeed - deceleration * delta);
     }
     
-    // Get movement direction based on keys
-    direction.z = Number(moveBackward) - Number(moveForward); // Corrected direction
-    direction.x = Number(moveRight) - Number(moveLeft);
+    // Get movement direction relative to camera orientation
+    const moveDirection = getMovementDirection();
     
-    // Normalize for consistent speed in all directions, but only if actually moving
-    if (direction.x !== 0 || direction.z !== 0) {
-        direction.normalize();
+    // Calculate potential new position
+    const newPosition = new THREE.Vector3(
+        yawObject.position.x + moveDirection.x * currentSpeed * delta,
+        yawObject.position.y + velocity.y * delta,
+        yawObject.position.z + moveDirection.z * currentSpeed * delta
+    );
+    
+    // Check for collisions with obstacles
+    const playerRadius = 0.8;
+    const hasCollision = checkCollisions(
+        new THREE.Vector3(newPosition.x, yawObject.position.y, newPosition.z), 
+        playerRadius
+    );
+    
+    // Apply horizontal movement if no collision
+    if (!hasCollision) {
+        yawObject.position.x = newPosition.x;
+        yawObject.position.z = newPosition.z;
+    } else {
+        // If collision, try to slide along walls
+        // Try X movement only
+        const xOnlyPosition = new THREE.Vector3(
+            newPosition.x,
+            yawObject.position.y,
+            yawObject.position.z
+        );
+        
+        if (!checkCollisions(xOnlyPosition, playerRadius)) {
+            yawObject.position.x = newPosition.x;
+        }
+        
+        // Try Z movement only
+        const zOnlyPosition = new THREE.Vector3(
+            yawObject.position.x,
+            yawObject.position.y,
+            newPosition.z
+        );
+        
+        if (!checkCollisions(zOnlyPosition, playerRadius)) {
+            yawObject.position.z = newPosition.z;
+        }
     }
     
-    // Apply the calculated speed
-    velocity.z = direction.z * currentSpeed;
-    velocity.x = direction.x * currentSpeed;
-    
-    // Get forward and right vectors from camera orientation
-    const cameraDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
-    cameraDirection.y = 0;
-    cameraDirection.normalize();
-    
-    const cameraRight = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-    cameraRight.y = 0;
-    cameraRight.normalize();
-    
-    // Calculate movement vector relative to camera direction
-    const moveVector = new THREE.Vector3(0, 0, 0);
-    moveVector.addScaledVector(cameraDirection, -velocity.z);
-    moveVector.addScaledVector(cameraRight, velocity.x);
-    
-    // Apply movement
-    camera.position.x += moveVector.x * delta;
-    camera.position.z += moveVector.z * delta;
-    camera.position.y += velocity.y * delta; // Vertical movement from gravity/jumping
+    // Apply vertical movement (gravity/jumping)
+    yawObject.position.y += velocity.y * delta;
     
     // Update head bobbing
     updateHeadBob(delta, currentSpeed);
@@ -389,8 +611,8 @@ function updatePlayer(delta) {
     updateFOV(delta);
     
     // Ground collision check
-    if (camera.position.y < playerHeight) {
-        camera.position.y = playerHeight;
+    if (yawObject.position.y < playerHeight) {
+        yawObject.position.y = playerHeight;
         velocity.y = 0;
         canJump = true;
         isJumping = false;
@@ -398,18 +620,18 @@ function updatePlayer(delta) {
         // Reset bhop status after landing with more forgiving timing
         setTimeout(() => {
             isBhopping = false;
-        }, 350); // Increased from 300ms for even more forgiveness
+        }, 350);
     }
     
     // Boundary checks to keep player within the play area
-    const boundaryLimit = 99; // To match larger ground
+    const boundaryLimit = 99; // To match ground size
     
-    if (Math.abs(camera.position.x) > boundaryLimit) {
-        camera.position.x = Math.sign(camera.position.x) * boundaryLimit;
+    if (Math.abs(yawObject.position.x) > boundaryLimit) {
+        yawObject.position.x = Math.sign(yawObject.position.x) * boundaryLimit;
     }
     
-    if (Math.abs(camera.position.z) > boundaryLimit) {
-        camera.position.z = Math.sign(camera.position.z) * boundaryLimit;
+    if (Math.abs(yawObject.position.z) > boundaryLimit) {
+        yawObject.position.z = Math.sign(yawObject.position.z) * boundaryLimit;
     }
     
     // Update debug info
@@ -421,40 +643,42 @@ function updateFOV(delta) {
     // Determine if player is moving
     const isMoving = moveForward || moveBackward || moveLeft || moveRight;
     
-    // Adjust FOV
+    // Calculate target FOV based on speed
+    let targetFOV = defaultFOV;
+    
     if (isMoving) {
-        // More aggressive FOV increase based on current speed
-        const targetFOV = defaultFOV + (currentSpeed / playerSpeed) * (runningFOV - defaultFOV);
+        // Scale FOV based on current speed relative to base speed
+        const speedRatio = currentSpeed / playerSpeed;
+        targetFOV = defaultFOV + (speedRatio * (runningFOV - defaultFOV));
         
-        // Smoothly transition to target FOV
-        camera.fov += (targetFOV - camera.fov) * fovChangeSpeed * delta;
-        camera.updateProjectionMatrix();
-    } else {
-        // Smoothly return to default FOV when not moving
-        camera.fov += (defaultFOV - camera.fov) * fovChangeSpeed * delta;
-        camera.updateProjectionMatrix();
+        // Extra FOV boost during bhop
+        if (isBhopping) {
+            targetFOV += 10;
+        }
     }
     
-    // Additional FOV boost during bhop
-    if (isBhopping) {
-        camera.fov += (runningFOV + 8 - camera.fov) * fovChangeSpeed * delta;
-        camera.updateProjectionMatrix();
-    }
+    // Smooth transition to target FOV
+    camera.fov += (targetFOV - camera.fov) * fovChangeSpeed * delta;
+    
+    // Ensure FOV stays within reasonable bounds
+    camera.fov = Math.max(defaultFOV, Math.min(runningFOV + 15, camera.fov));
+    
+    // Update projection matrix when FOV changes
+    camera.updateProjectionMatrix();
 }
 
 // Update debugging information
 function updateDebugInfo() {
     debugInfo.innerHTML = `
-        Position: (${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)})<br>
+        Position: (${yawObject.position.x.toFixed(2)}, ${yawObject.position.y.toFixed(2)}, ${yawObject.position.z.toFixed(2)})<br>
         Velocity: (${velocity.x.toFixed(2)}, ${velocity.y.toFixed(2)}, ${velocity.z.toFixed(2)})<br>
         Current Speed: ${currentSpeed.toFixed(2)}<br>
         FOV: ${camera.fov.toFixed(1)}<br>
         Can Jump: ${canJump}<br>
         Is Jumping: ${isJumping}<br>
         Bhop Active: ${isBhopping}<br>
-        Jump Time: ${jumpTime}<br>
         Last Jump Time: ${lastJumpTime}<br>
-        Time Since Last Jump: ${jumpTime - lastJumpTime}ms<br>
+        Time Since Last Jump: ${Date.now() - lastJumpTime}ms<br>
         Head Bob: ${bobActive ? 'Active' : 'Inactive'}<br>
         Enemy Count: ${enemies.length}
     `;
