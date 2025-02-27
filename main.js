@@ -2,7 +2,7 @@
 let scene, camera, renderer;
 let player; // Player object that will hold the camera
 let canvas;
-let instructions, hud, debugInfo, bhopIndicator;
+let instructions, hud, debugInfo, bhopIndicator, movementIndicator;
 
 // Player variables
 let moveForward = false;
@@ -80,6 +80,7 @@ function init() {
     hud = document.getElementById('hud');
     debugInfo = document.getElementById('debug-info');
     bhopIndicator = document.getElementById('indicator');
+    movementIndicator = document.getElementById('movement-indicator');
     canvas = document.getElementById('game-canvas');
 
     // Create the scene
@@ -527,12 +528,23 @@ function updateMovementMode() {
     if (isSprinting) {
         playerSpeed = sprintSpeed;
         currentBobAmplitude = sprintBobAmplitude;
+        movementIndicator.textContent = "SPRINTING";
+        movementIndicator.style.color = "#ff9f9f";
     } else if (isWalking) {
         playerSpeed = walkSpeed;
         currentBobAmplitude = walkBobAmplitude;
+        movementIndicator.textContent = "WALKING";
+        movementIndicator.style.color = "#9fdcff";
     } else {
         playerSpeed = runSpeed;
         currentBobAmplitude = bobAmplitude;
+        movementIndicator.textContent = "RUNNING";
+        movementIndicator.style.color = "#ffffff";
+    }
+    
+    if (isBhopping) {
+        movementIndicator.textContent += ` + BHOP x${bhopChainCount}`;
+        movementIndicator.style.color = "#9fffbf";
     }
 }
 
@@ -557,16 +569,31 @@ function updateHeadBob(delta, speed) {
         const verticalBob = Math.sin(bobTimer) * currentBobAmplitude * speedFactor;
         const lateralBob = Math.cos(bobTimer * 0.5) * currentBobAmplitude * 0.5 * speedFactor;
         
-        // Dampen the transition - lerp between current and target values
-        const dampFactor = 0.15;
-        camera.position.y += (verticalBob - camera.position.y) * dampFactor;
-        camera.position.x += (lateralBob - camera.position.x) * dampFactor;
+        // Use smoothDamp-like approach for camera movement
+        const smoothTime = 0.15; // Lower value = faster response
+        const omega = 2 / smoothTime;
+        const x = omega * delta;
+        const exp = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+        
+        // Apply smooth damping to camera position
+        const targetY = verticalBob;
+        const targetX = lateralBob;
+        
+        camera.position.y = camera.position.y * exp + targetY * (1 - exp);
+        camera.position.x = camera.position.x * exp + targetX * (1 - exp);
     } else if (bobActive) {
         // Gradually fade out the bob when stopping
         bobActive = false;
         const dampFactor = 0.1;
-        camera.position.y *= (1 - dampFactor);
-        camera.position.x *= (1 - dampFactor);
+        
+        // Use the same smooth damping approach for stopping
+        const smoothTime = 0.3; // Higher value = slower stop
+        const omega = 2 / smoothTime;
+        const x = omega * delta;
+        const exp = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+        
+        camera.position.y = camera.position.y * exp;
+        camera.position.x = camera.position.x * exp;
         
         if (Math.abs(camera.position.y) < 0.002) camera.position.y = 0;
         if (Math.abs(camera.position.x) < 0.002) camera.position.x = 0;
@@ -712,6 +739,7 @@ function updatePlayer(delta) {
         // Reset bhop status after landing with more forgiving timing
         setTimeout(() => {
             isBhopping = false;
+            updateMovementMode(); // Update the movement indicator
         }, 350);
     }
     
