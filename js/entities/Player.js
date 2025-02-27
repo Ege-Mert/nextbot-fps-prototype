@@ -29,6 +29,13 @@ export class Player extends PhysicsEntity {
         this.AIR_ACCELERATION = 30; // Separate air acceleration value
         this.AIR_DECELERATION = 10; // Lower deceleration in air
         
+        // Collision parameters
+        this.COLLISION_RADIUS = 0.8;
+        this.COLLISION_SEGMENTS = 8; // Number of rays for collision detection
+        this.COLLISION_PUSH_FACTOR = 0.05; // How strongly to push player away from obstacles
+        this.COLLISION_SLIDE_FACTOR = 0.8; // How much velocity to preserve when sliding
+        this.STEP_HEIGHT = 0.25; // Maximum height player can step up
+        
         // FOV constants
         this.DEFAULT_FOV = 75;
         this.RUNNING_FOV = 85;
@@ -68,6 +75,10 @@ export class Player extends PhysicsEntity {
         this.SLIDE_COOLDOWN = 1.0; // seconds
         this.slideCooldownTimer = 0;
         
+        // Previous position for interpolation
+        this.previousPosition = new THREE.Vector3();
+        this.interpFactor = 0.25; // Used for smoothing collision response
+        
         // Initialize physics properties
         this.init();
         
@@ -103,6 +114,9 @@ export class Player extends PhysicsEntity {
         // Initialize physics values
         this.velocity = new THREE.Vector3();
         this.direction = new THREE.Vector3();
+        
+        // Store initial position
+        this.previousPosition.copy(this.yawObject.position);
     }
     
     /**
@@ -268,6 +282,9 @@ export class Player extends PhysicsEntity {
      * @param {number} delta - Time delta since last update
      */
     update(delta) {
+        // Store previous position for interpolation
+        this.previousPosition.copy(this.yawObject.position);
+        
         // Apply gravity
         this.velocity.y -= this.GRAVITY * delta;
         
@@ -309,8 +326,8 @@ export class Player extends PhysicsEntity {
             this.yawObject.position.z + movementWithKnockback.z * delta
         );
         
-        // Check for collisions and move the player
-        this.handleMovementCollisions(newPosition, delta);
+        // Check for collisions and move the player with improved handling
+        this.improvedCollisionHandling(newPosition, movementWithKnockback, delta);
         
         // Update head bobbing effect - disable during slide
         if (!this.isSliding) {
@@ -394,50 +411,193 @@ export class Player extends PhysicsEntity {
     }
     
     /**
-     * Handle collisions with obstacles during movement
+     * Improved collision handling with multi-ray casting and smooth response
      * @param {THREE.Vector3} newPosition - Potential new position
+     * @param {THREE.Vector3} moveVelocity - Current movement velocity
      * @param {number} delta - Time delta
      */
-    handleMovementCollisions(newPosition, delta) {
-        // Check for horizontal collisions (X and Z)
-        const playerRadius = 0.8;
-        const hasCollision = this.collisionUtils.checkObstacleCollision(
-            this.scene,
-            new THREE.Vector3(newPosition.x, this.yawObject.position.y, newPosition.z),
-            playerRadius
+    improvedCollisionHandling(newPosition, moveVelocity, delta) {
+        // First, handle vertical movement separately (y-axis)
+        this.yawObject.position.y += this.velocity.y * delta;
+        
+        // Now handle horizontal movement with better collision detection
+        const currentPos = new THREE.Vector3(
+            this.yawObject.position.x,
+            this.yawObject.position.y,
+            this.yawObject.position.z
         );
         
-        // Apply horizontal movement if no collision
-        if (!hasCollision) {
-            this.yawObject.position.x = newPosition.x;
-            this.yawObject.position.z = newPosition.z;
+        const targetPos = new THREE.Vector3(
+            newPosition.x,
+            this.yawObject.position.y, // Keep current height
+            newPosition.z
+        );
+        
+        // Calculate movement vector
+        const moveVec = new THREE.Vector3().subVectors(targetPos, currentPos);
+        const moveDistance = moveVec.length();
+        
+        // If no movement, skip collision check
+        if (moveDistance < 0.001) return;
+        
+        // Normalize move vector
+        const moveDir = moveVec.clone().normalize();
+        
+        // Create rays in a circle around the player for better collision detection
+        const collisionDetected = this.castCollisionRays(currentPos, moveDir, moveDistance);
+        
+        if (!collisionDetected) {
+            // No collision, move freely
+            this.yawObject.position.x = targetPos.x;
+            this.yawObject.position.z = targetPos.z;
         } else {
-            // If collision, try to slide along walls
-            // Try X movement only
-            const xOnlyPosition = new THREE.Vector3(
-                newPosition.x,
-                this.yawObject.position.y,
-                this.yawObject.position.z
+            // Collision detected, use sliding and interpolation for smoother movement
+            
+            // Try sliding along walls by projecting velocity
+            this.handleSlideAlongWalls(currentPos, targetPos, moveDir);
+        }
+    }
+    
+    /**
+     * Cast multiple rays to detect collisions more accurately
+     * @param {THREE.Vector3} position - Current position
+     * @param {THREE.Vector3} direction - Movement direction
+     * @param {number} distance - Movement distance
+     * @returns {boolean} Whether any collision was detected
+     */
+    castCollisionRays(position, direction, distance) {
+        // Cast rays in multiple directions around the player
+        const rayCount = this.COLLISION_SEGMENTS;
+        const rayLength = distance + this.COLLISION_RADIUS;
+        let collisionDetected = false;
+        
+        // First, cast a ray directly in the movement direction
+        const forwardRaycaster = new THREE.Raycaster(
+            position,
+            direction,
+            0,
+            rayLength
+        );
+        
+        // Get obstacles
+        const obstacles = this.scene.children.filter(child => 
+            child.userData && child.userData.isObstacle
+        );
+        
+        // Check forward ray
+        const forwardIntersections = forwardRaycaster.intersectObjects(obstacles);
+        if (forwardIntersections.length > 0) {
+            collisionDetected = true;
+        }
+        
+        // Cast additional rays around the player in a circle
+        for (let i = 0; i < rayCount; i++) {
+            // Calculate angle for this ray
+            const angle = (i / rayCount) * Math.PI * 2;
+            
+            // Create a ray direction that's offset from the movement direction
+            const offsetDir = new THREE.Vector3(
+                Math.cos(angle) * this.COLLISION_RADIUS,
+                0,
+                Math.sin(angle) * this.COLLISION_RADIUS
             );
             
-            if (!this.collisionUtils.checkObstacleCollision(this.scene, xOnlyPosition, playerRadius)) {
-                this.yawObject.position.x = newPosition.x;
-            }
+            // Create a ray origin that's offset perpendicular to movement
+            const rayOrigin = new THREE.Vector3().copy(position).add(offsetDir);
             
-            // Try Z movement only
-            const zOnlyPosition = new THREE.Vector3(
-                this.yawObject.position.x,
-                this.yawObject.position.y,
-                newPosition.z
+            // Create the raycaster
+            const raycaster = new THREE.Raycaster(
+                rayOrigin,
+                direction,
+                0,
+                distance
             );
             
-            if (!this.collisionUtils.checkObstacleCollision(this.scene, zOnlyPosition, playerRadius)) {
-                this.yawObject.position.z = newPosition.z;
+            // Check for intersections
+            const intersections = raycaster.intersectObjects(obstacles);
+            if (intersections.length > 0) {
+                collisionDetected = true;
+                break;
             }
         }
         
-        // Apply vertical movement
-        this.yawObject.position.y += this.velocity.y * delta;
+        return collisionDetected;
+    }
+    
+    /**
+     * Handle sliding along walls when collision is detected
+     * @param {THREE.Vector3} currentPos - Current position
+     * @param {THREE.Vector3} targetPos - Target position
+     * @param {THREE.Vector3} moveDir - Movement direction
+     */
+    handleSlideAlongWalls(currentPos, targetPos, moveDir) {
+        // Try moving along X-axis only
+        const xOnlyMove = new THREE.Vector3(
+            targetPos.x - currentPos.x,
+            0,
+            0
+        );
+        
+        // Check if X-only movement is collision-free
+        const xOnlyCollision = this.castCollisionRays(
+            currentPos,
+            xOnlyMove.clone().normalize(),
+            xOnlyMove.length()
+        );
+        
+        // Try moving along Z-axis only
+        const zOnlyMove = new THREE.Vector3(
+            0,
+            0,
+            targetPos.z - currentPos.z
+        );
+        
+        // Check if Z-only movement is collision-free
+        const zOnlyCollision = this.castCollisionRays(
+            currentPos,
+            zOnlyMove.clone().normalize(),
+            zOnlyMove.length()
+        );
+        
+        // The new position to move to (will be updated based on collision results)
+        const newPos = new THREE.Vector3().copy(currentPos);
+        
+        // Apply sliding movement with interpolation for smoothness
+        if (!xOnlyCollision) {
+            // Can move along X
+            newPos.x = targetPos.x;
+            
+            // Preserve some Z momentum by sliding
+            if (Math.abs(moveDir.z) > 0.1) {
+                this.velocity.z *= this.COLLISION_SLIDE_FACTOR;
+            }
+        }
+        
+        if (!zOnlyCollision) {
+            // Can move along Z
+            newPos.z = targetPos.z;
+            
+            // Preserve some X momentum by sliding
+            if (Math.abs(moveDir.x) > 0.1) {
+                this.velocity.x *= this.COLLISION_SLIDE_FACTOR;
+            }
+        }
+        
+        // Use interpolation for smoother movement near obstacles
+        this.yawObject.position.x = this.lerpWithDelta(this.yawObject.position.x, newPos.x, this.interpFactor);
+        this.yawObject.position.z = this.lerpWithDelta(this.yawObject.position.z, newPos.z, this.interpFactor);
+    }
+    
+    /**
+     * Helper method for smoother interpolation
+     * @param {number} current - Current value
+     * @param {number} target - Target value
+     * @param {number} factor - Interpolation factor
+     * @returns {number} Interpolated value
+     */
+    lerpWithDelta(current, target, factor) {
+        // This provides a smoother transition without completely replacing the position
+        return current + (target - current) * factor;
     }
     
     /**
@@ -447,7 +607,18 @@ export class Player extends PhysicsEntity {
         const playerHeight = this.isSliding ? this.HEIGHT * 0.6 : this.HEIGHT;
         
         if (this.yawObject.position.y < playerHeight) {
-            this.yawObject.position.y = playerHeight;
+            // Smoothly interpolate to the correct height instead of snapping
+            this.yawObject.position.y = this.lerpWithDelta(
+                this.yawObject.position.y,
+                playerHeight,
+                0.5 // Faster interpolation for ground (feels more solid)
+            );
+            
+            // Ensure we don't go below the minimum height
+            if (Math.abs(this.yawObject.position.y - playerHeight) < 0.01) {
+                this.yawObject.position.y = playerHeight;
+            }
+            
             this.velocity.y = 0;
             
             // If we just landed, trigger landing event
