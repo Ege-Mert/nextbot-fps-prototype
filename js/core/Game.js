@@ -115,9 +115,12 @@ export class Game {
         document.addEventListener('keydown', initAudio);
         
         // Also try to initialize on first jump or game action
-        document.getElementById('instructions').addEventListener('click', () => {
-            setTimeout(initAudio, 100); // Short delay to ensure it happens after pointer lock
-        });
+        const instructionsElement = document.getElementById('instructions');
+        if (instructionsElement) {
+            instructionsElement.addEventListener('click', () => {
+                setTimeout(initAudio, 100); // Short delay to ensure it happens after pointer lock
+            });
+        }
     }
     
     /**

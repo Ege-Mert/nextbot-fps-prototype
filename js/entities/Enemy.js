@@ -52,13 +52,6 @@ export class Enemy extends PhysicsEntity {
         this.stuckRecoveryDuration = 1.5; // How long to perform recovery movement
         this.stuckEscapeDirection = new THREE.Vector3(); // Direction to escape when stuck
         
-        // Create the enemy mesh
-        this.createMesh(spawnPosition);
-        
-        // Initialize utility classes
-        this.collisionUtils = new CollisionUtils();
-        this.pathfinding = new PathfindingService(scene);
-        
         // State machine
         this.state = 'SPAWN';
         this.previousState = 'SPAWN';
@@ -67,6 +60,13 @@ export class Enemy extends PhysicsEntity {
         // History for smoothing
         this.positionHistory = []; // Store recent positions for smoothing
         this.rotationHistory = []; // Store recent rotations for smoothing
+        
+        // Create the enemy mesh
+        this.createMesh(spawnPosition);
+        
+        // Initialize utility classes
+        this.collisionUtils = new CollisionUtils();
+        this.pathfinding = new PathfindingService(scene);
     }
     
     /**
@@ -106,9 +106,11 @@ export class Enemy extends PhysicsEntity {
         this.mesh.position.y = this.HEIGHT / 2; // Center vertically
         
         // Initialize position and rotation history with current values
-        for (let i = 0; i < 5; i++) {
-            this.positionHistory.push(this.mesh.position.clone());
-            this.rotationHistory.push(this.mesh.rotation.y);
+        if (this.positionHistory && this.rotationHistory) {
+            for (let i = 0; i < 5; i++) {
+                this.positionHistory.push(this.mesh.position.clone());
+                this.rotationHistory.push(this.mesh.rotation.y);
+            }
         }
         
         // Enable shadows
