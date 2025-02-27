@@ -6,6 +6,10 @@ import { InputManager } from '../controllers/InputManager.js';
 import { UIManager } from './UIManager.js';
 import { EntityManager } from './EntityManager.js';
 import { Clock } from '../utils/Clock.js';
+import { ParticleManager } from '../utils/ParticleManager.js';
+import { ProceduralAudioManager } from '../audio/ProceduralAudioManager.js';
+import { ScoreManager } from '../utils/ScoreManager.js';
+import { SlowMotionManager } from '../utils/SlowMotionManager.js';
 
 export class Game {
     constructor() {
@@ -14,6 +18,15 @@ export class Game {
         this.uiManager = new UIManager();
         this.entityManager = new EntityManager(this);
         this.clock = new Clock();
+        
+        // Initialize audio manager
+        this.audioManager = new ProceduralAudioManager();
+        
+        // Initialize score manager
+        this.scoreManager = new ScoreManager(this.uiManager);
+        
+        // Initialize slow motion manager
+        this.slowMotionManager = new SlowMotionManager();
         
         // Initialize game state
         this.isRunning = false;
@@ -40,6 +53,9 @@ export class Game {
         this.sceneManager.init();
         this.inputManager.init();
         this.uiManager.init();
+        
+        // Initialize particle manager
+        this.particleManager = new ParticleManager(this.sceneManager.scene);
         
         // Setup the player
         this.entityManager.createPlayer(this.sceneManager.scene, this.sceneManager.camera);
@@ -131,10 +147,23 @@ export class Game {
         // Skip updates if paused
         if (this.isPaused) return;
         
-        const delta = Math.min(0.1, this.clock.getDelta());
+        // Get raw delta time from the clock
+        const rawDelta = Math.min(0.1, this.clock.getDelta());
+        
+        // Update slow-motion manager with raw delta time
+        this.slowMotionManager.update(rawDelta);
+        
+        // Apply time scale to get adjusted delta for game logic
+        const delta = rawDelta * this.slowMotionManager.getTimeScale();
+        
+        // Update score manager (for combo decay, etc.)
+        this.scoreManager.update(delta);
         
         // Update all game entities
         this.entityManager.update(delta);
+        
+        // Update particle systems
+        this.particleManager.update(delta);
         
         // Performance optimization: Frustum culling
         if (this.enableFrustumCulling) {

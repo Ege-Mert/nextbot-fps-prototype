@@ -6,6 +6,7 @@ import { CollisionUtils } from '../utils/CollisionUtils.js';
 import { BhopController } from '../controllers/BhopController.js';
 import { HeadBobController } from '../controllers/HeadBobController.js';
 import { FovController } from '../controllers/FovController.js';
+import { ParticleManager } from '../utils/ParticleManager.js';
 
 export class Player extends PhysicsEntity {
     constructor(scene, camera) {
@@ -68,13 +69,22 @@ export class Player extends PhysicsEntity {
         this.SLIDE_COOLDOWN = 1.0; // seconds
         this.slideCooldownTimer = 0;
         
+        // Initialize target rotations to current rotations
+        this.targetYaw = 0;   // Will be set after creating yawObject
+        this.targetPitch = 0; // Will be set after creating pitchObject
+        
         // Initialize physics properties
         this.init();
+        
+        // After initializing, store initial rotation values:
+        this.targetYaw = this.yawObject.rotation.y;
+        this.targetPitch = this.pitchObject.rotation.x;
         
         // Create controllers
         this.bhopController = new BhopController();
         this.headBobController = new HeadBobController(this.camera);
         this.fovController = new FovController(this.camera);
+        this.particleManager = new ParticleManager(scene);
         
         // Utility classes
         this.collisionUtils = new CollisionUtils();
@@ -176,11 +186,23 @@ export class Player extends PhysicsEntity {
         this.canJump = false;
         this.isJumping = true;
         
+        // Play jump sound if audio manager is available
+        if (this.game && this.game.audioManager) {
+            this.game.audioManager.playJumpSound();
+        }
+        
         // Record jump time
         const jumpTime = Date.now();
+        this.lastJumpTime = jumpTime; // Store the jump time for air time calculation
         
         // Check for bhop
         const bhopSuccess = this.bhopController.handleJump(jumpTime);
+        
+        // Add score for successful bhops
+        if (bhopSuccess && this.game && this.game.scoreManager) {
+            this.game.scoreManager.addBhopScore(this.bhopController.chainCount);
+            // Optionally, trigger a score sound or UI animation here.
+        }
         
         // Update FOV for jump
         this.updateMovementState();
@@ -250,17 +272,40 @@ export class Player extends PhysicsEntity {
      * Handle player landing
      */
     handleLanding() {
-        // Record landing time for bhop timing
+        // Record landing time for bhop timing.
         const landTime = Date.now();
         this.bhopController.handleLanding(landTime);
         
         this.canJump = true;
         this.isJumping = false;
         
-        // End slide if we were sliding
+        // End slide if we were sliding.
         if (this.isSliding) {
             this.endSlide();
         }
+        
+        // Calculate air time and add score if significant
+        if (this.lastJumpTime && this.game && this.game.scoreManager) {
+            const airTime = (landTime - this.lastJumpTime) / 1000;
+            if (airTime > 0.2) { // Only add bonus if air time is significant
+                this.game.scoreManager.addAirScore(airTime);
+            }
+        }
+        
+        // Calculate an intensity for the landing shake.
+        // Here, you might base the intensity on the current speed; for simplicity, we use a constant.
+        const shakeIntensity = 0.1; // Adjust as needed for a subtle effect.
+        this.headBobController.applyLandingShake(shakeIntensity);
+        
+        // Play landing sound if audio manager is available
+        if (this.game && this.game.audioManager) {
+            this.game.audioManager.playLandingSound();
+        }
+        
+        // Trigger a dust effect at the player's feet.
+        const landingPosition = this.yawObject.position.clone();
+        landingPosition.y = 0; // Ground level
+        this.particleManager.spawnDustEffect(landingPosition, 25, 0.4, 1.2);
     }
     
     /**
@@ -312,6 +357,9 @@ export class Player extends PhysicsEntity {
         // Check for collisions and move the player
         this.handleMovementCollisions(newPosition, delta);
         
+        // Update camera rotation with smoothing
+        this.updateCameraRotation(delta);
+        
         // Update head bobbing effect - disable during slide
         if (!this.isSliding) {
             this.headBobController.update(delta, this.currentSpeed, this.canJump, 
@@ -326,6 +374,9 @@ export class Player extends PhysicsEntity {
         
         // Check boundary limits
         this.enforceBoundaries();
+        
+        // Update particle systems
+        this.particleManager.update(delta);
         
         // Update bhop controller
         this.bhopController.update(delta);
@@ -480,14 +531,36 @@ export class Player extends PhysicsEntity {
      * @param {number} sensitivity - Mouse sensitivity
      */
     handleMouseMovement(movementX, movementY, sensitivity) {
-        const smoothFactor = 0.1; // Smoothing factor for mouse movement
-        this.yawObject.rotation.y -= movementX * sensitivity * smoothFactor;
+        // Update target yaw and pitch based on mouse movement
+        this.targetYaw -= movementX * sensitivity;
+        this.targetPitch -= movementY * sensitivity;
         
-        this.pitchObject.rotation.x -= movementY * sensitivity * smoothFactor;
-        // Constrain pitch to avoid flipping
-        this.pitchObject.rotation.x = Math.max(
-            -Math.PI/2 + 0.01, 
-            Math.min(Math.PI/2 - 0.01, this.pitchObject.rotation.x)
+        // Clamp targetPitch to avoid flipping
+        const minPitch = -Math.PI / 2 + 0.01;
+        const maxPitch = Math.PI / 2 - 0.01;
+        this.targetPitch = Math.max(minPitch, Math.min(maxPitch, this.targetPitch));
+    }
+    
+    /**
+     * Call this function each frame to smoothly update the camera's rotation.
+     * @param {number} delta - Time delta from the game loop
+     */
+    updateCameraRotation(delta) {
+        // Adjust this smoothing factor as needed for your feel
+        const smoothFactor = 0.1;
+        
+        // Smoothly interpolate the yaw (horizontal rotation)
+        this.yawObject.rotation.y = THREE.MathUtils.lerp(
+            this.yawObject.rotation.y,
+            this.targetYaw,
+            smoothFactor
+        );
+        
+        // Smoothly interpolate the pitch (vertical rotation)
+        this.pitchObject.rotation.x = THREE.MathUtils.lerp(
+            this.pitchObject.rotation.x,
+            this.targetPitch,
+            smoothFactor
         );
     }
     

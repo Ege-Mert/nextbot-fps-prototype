@@ -6,11 +6,12 @@ import { CollisionUtils } from '../utils/CollisionUtils.js';
 import { PathfindingService } from '../utils/PathfindingService.js';
 
 export class Enemy extends PhysicsEntity {
-    constructor(scene, spawnPosition, speedMultiplier = 1.0) {
+    constructor(scene, spawnPosition, speedMultiplier = 1.0, game = null) {
         super();
         
         this.scene = scene;
         this.speedMultiplier = speedMultiplier;
+        this.game = game; // Store reference to the game object
         
         // Enemy constants
         this.HEIGHT = 2.5;
@@ -236,33 +237,59 @@ export class Enemy extends PhysicsEntity {
     }
     
     /**
-     * Update behavior in chase state - direct pursuit
+     * Update behavior in chase state - with predictive targeting
      * @param {number} delta - Time delta
      * @param {THREE.Vector3} playerPosition - Current player position
      */
     updateChase(delta, playerPosition) {
         const now = Date.now();
         
-        // Check if it's time to update the path
-        if (!this.targetPosition || now - this.lastPathUpdate > this.updateInterval) {
-            this.currentPath = this.pathfinding.findPath(
-                this.mesh.position,
-                playerPosition
-            );
+        // --- Predictive Targeting ---
+        // Use a prediction factor to estimate where the player will be in the near future.
+        const predictionFactor = 0.5; // seconds into the future
+        let predictedPosition = playerPosition.clone();
+        
+        // If available, use player's current speed and movement direction.
+        if (this.game && this.game.entityManager && this.game.entityManager.player) {
+            const player = this.game.entityManager.player;
+            // Assume player.getMovementDirection() returns a normalized THREE.Vector3.
+            const playerDirection = player.getMovementDirection();
+            predictedPosition.addScaledVector(playerDirection, player.currentSpeed * predictionFactor);
+        }
+        
+        // Use the predicted position as our target.
+        this.targetPosition = predictedPosition;
+        
+        // --- Path Recalculation ---
+        // Update the path if enough time has passed or if the target has moved significantly.
+        if (!this.currentPath || now - this.lastPathUpdate > this.updateInterval) {
+            this.currentPath = this.pathfinding.findPath(this.mesh.position, this.targetPosition);
             this.currentPathIndex = 0;
             this.lastPathUpdate = now;
         }
         
-        // Move along the path
+        // --- Aggressiveness Adjustment ---
+        // If the enemy is close to the predicted position, give a temporary speed boost.
+        const distanceToPredicted = this.mesh.position.distanceTo(this.targetPosition);
+        if (distanceToPredicted < 10) {
+            this.speed = this.BASE_SPEED * this.speedMultiplier * 1.2; // 20% speed boost
+        } else {
+            this.speed = this.BASE_SPEED * this.speedMultiplier;
+        }
+        
+        // --- Movement and Obstacle Avoidance ---
+        // Move along the calculated path (using the existing moveAlongPath method).
         this.moveAlongPath(delta);
         
-        // Random chance to jump while chasing
-        if (this.canJump && this.jumpCooldown <= 0 && Math.random() < this.jumpProbability) {
+        // --- Dynamic Jumping ---
+        // Increase jump probability slightly to add unpredictability.
+        if (this.canJump && this.jumpCooldown <= 0 && Math.random() < this.jumpProbability * 1.5) {
             this.jump();
         }
         
-        // Face the player
-        this.lookAt(playerPosition);
+        // --- Facing the Target ---
+        // Always face toward the predicted target for a more aggressive pursuit.
+        this.lookAt(this.targetPosition);
     }
     
     /**

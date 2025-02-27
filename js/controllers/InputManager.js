@@ -108,6 +108,16 @@ export class InputManager {
      * @param {KeyboardEvent} event - Key down event
      */
     onKeyDown(event) {
+        // Always handle ESC to show sensitivity settings
+        if (event.code === 'Escape') {
+            // Show the sensitivity settings overlay.
+            this.game.uiManager.showSensitivitySettings();
+            // Exit pointer lock (if not already)
+            document.exitPointerLock();
+            return; // Prevent further processing.
+        }
+        
+        // For other keys, only process if pointer is locked.
         if (!this.pointerLocked) return;
         
         switch (event.code) {
@@ -125,7 +135,6 @@ export class InputManager {
                 break;
             case 'ShiftLeft':
             case 'ShiftRight':
-                // Enable sprinting
                 this.keys.isSprinting = true;
                 this.keys.isWalking = false;
                 break;
@@ -133,27 +142,18 @@ export class InputManager {
             case 'AltRight':
             case 'ControlLeft':
             case 'ControlRight':
-                // Enable walking
                 this.keys.isWalking = true;
                 this.keys.isSprinting = false;
                 break;
             case 'Space':
-                // Handle jumping
                 if (this.game.entityManager.player) {
                     this.game.entityManager.player.jump();
                 }
                 break;
             case 'KeyB': 
-                // Debug mode toggle (could be expanded in a debug controller)
                 this.toggleDebugMode();
                 break;
-            case 'Escape':
-                // Exit pointer lock
-                document.exitPointerLock();
-                break;
         }
-        
-        // Update player movement state
         this.updatePlayerMovement();
     }
     

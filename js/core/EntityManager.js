@@ -43,6 +43,13 @@ export class EntityManager {
      */
     createPlayer(scene, camera) {
         this.player = new Player(scene, camera);
+        
+        // Pass the game's particle manager to the player instead of creating its own
+        this.player.particleManager = this.game.particleManager;
+        
+        // Add reference to game for audio access
+        this.player.game = this.game;
+        
         return this.player;
     }
     
@@ -252,6 +259,13 @@ export class EntityManager {
                 // Handle collision
                 console.log('Player collided with enemy!');
                 this.handlePlayerDamage();
+                
+                // If the player is moving fast enough, trigger slow-motion
+                if (this.player.currentSpeed > 15) { // Threshold speed
+                    // Slow down to 20% speed for 1.5 seconds
+                    this.game.slowMotionManager.triggerSlowMotion(0.2, 1.5);
+                }
+                
                 // Add some knockback to the player
                 if (this.player) {
                     const knockbackDirection = new THREE.Vector3()
