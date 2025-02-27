@@ -1,0 +1,278 @@
+// Global variables
+let scene, camera, renderer;
+let canvas;
+let instructions, hud, debugInfo;
+
+// Player variables
+let moveForward = false;
+let moveBackward = false;
+let moveLeft = false;
+let moveRight = false;
+let canJump = false;
+let isJumping = false;
+let isBhopping = false;
+let jumpTime = 0;
+let lastJumpTime = 0;
+const BHOP_WINDOW = 200; // ms window to perform a successful bhop
+const BHOP_BOOST = 1.5; // Speed multiplier for successful bhop
+
+// Physics variables
+let velocity = new THREE.Vector3();
+const direction = new THREE.Vector3();
+const playerHeight = 2;
+const gravity = 30;
+const jumpForce = 12;
+const playerSpeed = 10;
+
+// Initialize the scene, camera, and renderer
+function init() {
+    // Set up instruction UI elements
+    instructions = document.getElementById('instructions');
+    hud = document.getElementById('hud');
+    debugInfo = document.getElementById('debug-info');
+    canvas = document.getElementById('game-canvas');
+
+    // Create the scene
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87CEEB); // Sky blue background
+
+    // Create the camera (first-person perspective)
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.y = playerHeight;
+
+    // Create the renderer
+    renderer = new THREE.WebGLRenderer({
+        canvas: canvas,
+        antialias: true
+    });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+
+    // Add lighting
+    const ambientLight = new THREE.AmbientLight(0x404040); // Soft white light
+    scene.add(ambientLight);
+
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+    directionalLight.position.set(5, 10, 7.5);
+    directionalLight.castShadow = true;
+    scene.add(directionalLight);
+
+    // Create a ground plane
+    createGround();
+
+    // Set up event listeners
+    setupEventListeners();
+    
+    // Start the animation loop
+    animate();
+}
+
+// Create the ground plane
+function createGround() {
+    const groundGeometry = new THREE.PlaneGeometry(100, 100);
+    const groundMaterial = new THREE.MeshStandardMaterial({
+        color: 0x228B22, // Forest green
+        roughness: 0.8
+    });
+    
+    const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+    ground.rotation.x = -Math.PI / 2; // Rotate to be horizontal
+    ground.receiveShadow = true;
+    ground.name = 'ground';
+    scene.add(ground);
+}
+
+// Set up event listeners for controls
+function setupEventListeners() {
+    // Click event to enable pointer lock controls
+    instructions.addEventListener('click', function() {
+        canvas.requestPointerLock();
+    });
+
+    // Pointer lock event handlers
+    document.addEventListener('pointerlockchange', lockChangeAlert, false);
+    
+    // Keyboard controls
+    document.addEventListener('keydown', onKeyDown, false);
+    document.addEventListener('keyup', onKeyUp, false);
+    
+    // Window resize handler
+    window.addEventListener('resize', onWindowResize, false);
+}
+
+// Handle pointer lock changes
+function lockChangeAlert() {
+    if (document.pointerLockElement === canvas) {
+        // Pointer is locked, enable mouse movement listener
+        document.addEventListener('mousemove', onMouseMove, false);
+        instructions.classList.add('hidden');
+    } else {
+        // Pointer is unlocked, disable mouse movement listener
+        document.removeEventListener('mousemove', onMouseMove, false);
+        instructions.classList.remove('hidden');
+    }
+}
+
+// Handle mouse movement for camera rotation
+function onMouseMove(event) {
+    // Rotate the camera based on mouse movement
+    const movementX = event.movementX || 0;
+    const movementY = event.movementY || 0;
+    
+    // Horizontal rotation (yaw)
+    camera.rotation.y -= movementX * 0.002;
+    
+    // Vertical rotation (pitch) with limits to prevent over-rotation
+    const newRotationX = camera.rotation.x - movementY * 0.002;
+    camera.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, newRotationX));
+}
+
+// Handle key down events
+function onKeyDown(event) {
+    switch (event.code) {
+        case 'KeyW':
+            moveForward = true;
+            break;
+        case 'KeyS':
+            moveBackward = true;
+            break;
+        case 'KeyA':
+            moveLeft = true;
+            break;
+        case 'KeyD':
+            moveRight = true;
+            break;
+        case 'Space':
+            if (canJump) {
+                // Regular jump
+                velocity.y = jumpForce;
+                canJump = false;
+                isJumping = true;
+                jumpTime = Date.now();
+                
+                // Check for bhop timing
+                const timeSinceLastJump = jumpTime - lastJumpTime;
+                if (timeSinceLastJump <= BHOP_WINDOW && timeSinceLastJump > 0) {
+                    isBhopping = true;
+                    console.log('BHOP activated!');
+                } else {
+                    isBhopping = false;
+                }
+                
+                lastJumpTime = jumpTime;
+            }
+            break;
+    }
+}
+
+// Handle key up events
+function onKeyUp(event) {
+    switch (event.code) {
+        case 'KeyW':
+            moveForward = false;
+            break;
+        case 'KeyS':
+            moveBackward = false;
+            break;
+        case 'KeyA':
+            moveLeft = false;
+            break;
+        case 'KeyD':
+            moveRight = false;
+            break;
+    }
+}
+
+// Handle window resize
+function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+// Update player movement and physics
+function updatePlayer(delta) {
+    // Apply gravity
+    velocity.y -= gravity * delta;
+    
+    // Handle movement based on camera direction
+    const speed = isBhopping ? playerSpeed * BHOP_BOOST : playerSpeed;
+    
+    direction.z = Number(moveForward) - Number(moveBackward);
+    direction.x = Number(moveRight) - Number(moveLeft);
+    direction.normalize();
+    
+    // Move forward/backward
+    if (moveForward || moveBackward) {
+        velocity.z = direction.z * speed;
+    } else {
+        velocity.z = 0;
+    }
+    
+    // Move left/right
+    if (moveLeft || moveRight) {
+        velocity.x = direction.x * speed;
+    } else {
+        velocity.x = 0;
+    }
+    
+    // Adjust movement direction based on camera rotation
+    const angle = camera.rotation.y;
+    const sin = Math.sin(angle);
+    const cos = Math.cos(angle);
+    
+    const vx = velocity.x * cos - velocity.z * sin;
+    const vz = velocity.x * sin + velocity.z * cos;
+    
+    // Move the camera (player)
+    camera.position.x += vx * delta;
+    camera.position.z += vz * delta;
+    camera.position.y += velocity.y * delta;
+    
+    // Ground collision check
+    if (camera.position.y < playerHeight) {
+        camera.position.y = playerHeight;
+        velocity.y = 0;
+        canJump = true;
+        isJumping = false;
+        
+        // Reset bhop status after landing
+        setTimeout(() => {
+            isBhopping = false;
+        }, 200);
+    }
+    
+    // Update debug info
+    updateDebugInfo();
+}
+
+// Update debugging information
+function updateDebugInfo() {
+    debugInfo.innerHTML = `
+        Position: (${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)})<br>
+        Velocity: (${velocity.x.toFixed(2)}, ${velocity.y.toFixed(2)}, ${velocity.z.toFixed(2)})<br>
+        Can Jump: ${canJump}<br>
+        Is Jumping: ${isJumping}<br>
+        Bhop Active: ${isBhopping}<br>
+        Jump Time: ${jumpTime}<br>
+        Last Jump Time: ${lastJumpTime}<br>
+        Time Since Last Jump: ${jumpTime - lastJumpTime}ms
+    `;
+}
+
+// Animation loop
+function animate() {
+    requestAnimationFrame(animate);
+    
+    const delta = Math.min(0.1, clock.getDelta());
+    
+    updatePlayer(delta);
+    
+    renderer.render(scene, camera);
+}
+
+// Clock for timing
+const clock = new THREE.Clock();
+
+// Initialize the application
+init();
