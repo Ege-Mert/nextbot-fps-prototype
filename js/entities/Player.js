@@ -261,8 +261,8 @@ export class Player extends PhysicsEntity {
     applyKnockback(direction, force) {
         this.knockbackVelocity.copy(direction).multiplyScalar(force);
         
-        // Add upward component (reduced from 0.5 to 0.15 to minimize excessive upward force)
-        this.knockbackVelocity.y += force * 0.15;
+        // Add minimal upward component (reduced from 0.15 to 0.05)
+        this.knockbackVelocity.y += force * 0.05;
         
         // Apply to velocity
         this.velocity.add(this.knockbackVelocity);
@@ -531,6 +531,11 @@ export class Player extends PhysicsEntity {
      * @param {number} sensitivity - Mouse sensitivity
      */
     handleMouseMovement(movementX, movementY, sensitivity) {
+        // Limit large movement spikes (helps prevent skipping)
+        const maxMovement = 30;
+        movementX = Math.max(-maxMovement, Math.min(maxMovement, movementX));
+        movementY = Math.max(-maxMovement, Math.min(maxMovement, movementY));
+        
         // Update target yaw and pitch based on mouse movement
         this.targetYaw -= movementX * sensitivity;
         this.targetPitch -= movementY * sensitivity;
@@ -539,6 +544,17 @@ export class Player extends PhysicsEntity {
         const minPitch = -Math.PI / 2 + 0.01;
         const maxPitch = Math.PI / 2 - 0.01;
         this.targetPitch = Math.max(minPitch, Math.min(maxPitch, this.targetPitch));
+        
+        // For quick movements, apply a portion directly for more responsiveness
+        // This hybrid approach combines smoothing with direct application
+        const directApplyFactor = 0.7; // 70% direct application for responsiveness
+        this.yawObject.rotation.y -= movementX * sensitivity * directApplyFactor;
+        
+        // Only apply to pitch if within limits
+        const newPitch = this.pitchObject.rotation.x - movementY * sensitivity * directApplyFactor;
+        if (newPitch >= minPitch && newPitch <= maxPitch) {
+            this.pitchObject.rotation.x = newPitch;
+        }
     }
     
     /**
@@ -546,22 +562,30 @@ export class Player extends PhysicsEntity {
      * @param {number} delta - Time delta from the game loop
      */
     updateCameraRotation(delta) {
-        // Adjust this smoothing factor as needed for your feel
-        const smoothFactor = 0.1;
+        // More responsive smoothing factor with delta time adjustment
+        // Lower smoothFactor = more smoothing but less responsive
+        // Higher smoothFactor = less smoothing but more responsive
+        const smoothFactor = 0.25; // Increased from 0.1 for better responsiveness
         
-        // Smoothly interpolate the yaw (horizontal rotation)
-        this.yawObject.rotation.y = THREE.MathUtils.lerp(
-            this.yawObject.rotation.y,
-            this.targetYaw,
-            smoothFactor
-        );
+        // Calculate the delta-adjusted smoothing factor
+        // This helps maintain consistent smoothing regardless of framerate
+        const adjustedFactor = 1 - Math.pow(1 - smoothFactor, delta * 60);
         
-        // Smoothly interpolate the pitch (vertical rotation)
-        this.pitchObject.rotation.x = THREE.MathUtils.lerp(
-            this.pitchObject.rotation.x,
-            this.targetPitch,
-            smoothFactor
-        );
+        // Calculate the remaining portion to smooth (the part not already directly applied in handleMouseMovement)
+        const remainingFactor = 0.3; // This matches (1 - directApplyFactor) from handleMouseMovement
+        
+        // Smoothly interpolate only the remaining portion of the rotation
+        if (Math.abs(this.yawObject.rotation.y - this.targetYaw) > 0.0001) {
+            this.yawObject.rotation.y += (this.targetYaw - this.yawObject.rotation.y) * adjustedFactor * remainingFactor;
+        } else {
+            this.yawObject.rotation.y = this.targetYaw; // Snap to exact value when very close
+        }
+        
+        if (Math.abs(this.pitchObject.rotation.x - this.targetPitch) > 0.0001) {
+            this.pitchObject.rotation.x += (this.targetPitch - this.pitchObject.rotation.x) * adjustedFactor * remainingFactor;
+        } else {
+            this.pitchObject.rotation.x = this.targetPitch; // Snap to exact value when very close
+        }
     }
     
     /**
