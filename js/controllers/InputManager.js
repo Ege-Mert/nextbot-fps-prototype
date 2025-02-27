@@ -91,11 +91,15 @@ export class InputManager {
     onMouseMove(event) {
         if (!this.pointerLocked) return;
         
-        // Get mouse movement and apply sensitivity
-        const movementX = event.movementX || 0;
-        const movementY = event.movementY || 0;
+        // Get mouse movement with a safety check against browser inconsistencies
+        const movementX = event.movementX !== undefined ? event.movementX : 0;
+        const movementY = event.movementY !== undefined ? event.movementY : 0;
         
-        // Update player camera rotation
+        // Only process if we have valid movement values
+        if (isNaN(movementX) || isNaN(movementY)) return;
+        
+        // Pass movement to player camera system with lower sensitivity (more precise control)
+        // We've made input more responsive, so sensitivity can be reduced
         this.game.entityManager.player.handleMouseMovement(
             movementX, 
             movementY, 
