@@ -3,7 +3,7 @@
  */
 import { SceneManager } from './SceneManager.js';
 import { InputManager } from '../controllers/InputManager.js';
-import { UIManager } from './UIManager.js';
+import { UIManager } from '../core/UIManager.js';
 import { EntityManager } from './EntityManager.js';
 import { Clock } from '../utils/Clock.js';
 import { ParticleManager } from '../utils/ParticleManager.js';

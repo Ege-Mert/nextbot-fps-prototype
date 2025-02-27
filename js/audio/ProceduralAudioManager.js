@@ -1,4 +1,5 @@
-import * as Tone from 'tone';
+// Using global Tone object from the script tag in index.html
+// import * as Tone from 'tone';
 
 export class ProceduralAudioManager {
     constructor() {
