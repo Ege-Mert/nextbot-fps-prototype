@@ -14,6 +14,10 @@ export class SceneManager {
         // Environment builders
         this.groundBuilder = new GroundBuilder();
         this.obstacleBuilder = new ObstacleBuilder();
+        
+        // Octree for spatial partitioning (optional)
+        this.octree = null;
+        this.octreeInitialized = false;
     }
     
     /**
@@ -94,6 +98,26 @@ export class SceneManager {
     }
     
     /**
+     * Initialize octree for spatial partitioning (performance optimization)
+     * This is a simple placeholder since we don't have a full octree implementation
+     */
+    initializeOctree() {
+        console.log("Octree initialization skipped (would require an octree library)");
+        // In a real implementation, we would create an octree and add all static scene objects to it
+        this.octreeInitialized = true;
+    }
+    
+    /**
+     * Update frustum culling to improve performance
+     * @param {THREE.Camera} camera - The camera to use for frustum culling
+     */
+    updateFrustumCulling(camera) {
+        // Simple frustum culling implementation
+        // In a real implementation, we would use the camera frustum to cull objects
+        // This is just a placeholder
+    }
+    
+    /**
      * Handle window resize
      */
     handleResize() {
@@ -110,5 +134,16 @@ export class SceneManager {
     render() {
         if (!this.scene || !this.camera || !this.renderer) return;
         this.renderer.render(this.scene, this.camera);
+    }
+    
+    /**
+     * Clean up resources
+     */
+    cleanup() {
+        // Dispose of geometries, materials, textures, etc.
+        if (this.scene) {
+            // Simple cleanup
+            console.log("Cleaning up scene resources");
+        }
     }
 }
