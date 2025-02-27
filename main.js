@@ -23,12 +23,25 @@ const direction = new THREE.Vector3();
 const playerHeight = 2;
 const gravity = 30;
 const jumpForce = 12;
-const playerSpeed = 10;
+const playerSpeed = 12; // Increased base speed
+
+// Movement control variables for smoother acceleration/deceleration
+let currentSpeed = 0;
+const acceleration = 80;
+const deceleration = 60;
+const maxSpeed = 20;
 
 // FOV variables
 const defaultFOV = 75;
 const runningFOV = 85;
-const fovChangeSpeed = 5;
+const fovChangeSpeed = 8; // Increased for more responsive FOV changes
+
+// Head bobbing variables
+let bobTimer = 0;
+const bobAmplitude = 0.05;
+const bobFrequency = 10;
+let bobActive = false;
+let bobHeight = 0;
 
 // Enemy variables
 let enemies = [];
@@ -36,6 +49,10 @@ const ENEMY_SPEED = 5;
 const ENEMY_HEIGHT = 2.5;
 const ENEMY_SPAWN_DISTANCE = 30;
 const MAX_ENEMIES = 3;
+
+// Camera control variables
+let cameraRotation = new THREE.Euler(0, 0, 0, 'YXZ');
+const cameraSensitivity = 0.002;
 
 // Initialize the scene, camera, and renderer
 function init() {
@@ -83,9 +100,9 @@ function init() {
     animate();
 }
 
-// Create the ground plane
+// Create the ground plane - this time ensuring it's correctly positioned
 function createGround() {
-    // Increased ground size from 100x100 to 200x200
+    // Increased ground size to 200x200
     const groundGeometry = new THREE.PlaneGeometry(200, 200);
     const groundMaterial = new THREE.MeshStandardMaterial({
         color: 0x228B22, // Forest green
@@ -93,10 +110,22 @@ function createGround() {
     });
     
     const ground = new THREE.Mesh(groundGeometry, groundMaterial);
-    ground.rotation.x = -Math.PI / 2; // Rotate to be horizontal
-    ground.receiveShadow = true;
+    
+    // Ensure the ground is properly rotated to be horizontal
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = 0; // Explicitly set Y position to 0
+    
+    // Create and add a separate coordinate system for the ground
+    // This ensures it won't be affected by camera rotation
+    const groundParent = new THREE.Object3D();
+    groundParent.add(ground);
+    
+    // Add to scene with a specific name for reference
+    groundParent.name = 'groundParent';
     ground.name = 'ground';
-    scene.add(ground);
+    ground.receiveShadow = true;
+    
+    scene.add(groundParent);
 }
 
 // Create and spawn enemies
@@ -201,18 +230,23 @@ function lockChangeAlert() {
     }
 }
 
-// Handle mouse movement for camera rotation
+// Improved mouse handling for smoother camera control
 function onMouseMove(event) {
-    // Rotate the camera based on mouse movement
+    if (document.pointerLockElement !== canvas) return;
+    
+    // Get mouse movement and apply sensitivity
     const movementX = event.movementX || 0;
     const movementY = event.movementY || 0;
     
-    // Horizontal rotation (yaw)
-    camera.rotation.y -= movementX * 0.002;
+    // Update camera rotation with Euler angles for more precise control
+    cameraRotation.y -= movementX * cameraSensitivity;
     
-    // Vertical rotation (pitch) with limits to prevent over-rotation
-    const newRotationX = camera.rotation.x - movementY * 0.002;
-    camera.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, newRotationX));
+    // Limit vertical rotation to prevent flipping
+    cameraRotation.x -= movementY * cameraSensitivity;
+    cameraRotation.x = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, cameraRotation.x));
+    
+    // Apply rotation to camera
+    camera.quaternion.setFromEuler(cameraRotation);
 }
 
 // Handle key down events
@@ -278,45 +312,78 @@ function onWindowResize() {
     renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
-// Update player movement and physics
+// Update head bobbing effect when moving
+function updateHeadBob(delta, speed) {
+    if ((moveForward || moveBackward || moveLeft || moveRight) && canJump) {
+        // Only bob when moving and grounded
+        bobActive = true;
+        bobTimer += delta * speed * bobFrequency;
+        bobHeight = Math.sin(bobTimer) * bobAmplitude;
+    } else {
+        bobActive = false;
+        bobHeight = 0;
+        // Gradually reset bob timer when not moving
+        bobTimer = 0;
+    }
+    
+    // Apply head bob to camera
+    if (canJump) { // Only apply bobbing when on ground
+        camera.position.y = playerHeight + bobHeight;
+    }
+}
+
+// Update player movement with improved physics
 function updatePlayer(delta) {
     // Apply gravity
     velocity.y -= gravity * delta;
     
-    // Handle movement based on camera direction
-    const speed = isBhopping ? playerSpeed * BHOP_BOOST : playerSpeed;
+    // Calculate the target speed based on input and bhop status
+    let targetSpeed = 0;
+    if (moveForward || moveBackward || moveLeft || moveRight) {
+        targetSpeed = isBhopping ? playerSpeed * BHOP_BOOST : playerSpeed;
+    }
     
-    // Fix: Corrected the direction calculation to fix inverted forward/backward
-    direction.z = Number(moveBackward) - Number(moveForward);  // Fixed inversion
+    // Smooth acceleration and deceleration
+    if (currentSpeed < targetSpeed) {
+        currentSpeed = Math.min(targetSpeed, currentSpeed + acceleration * delta);
+    } else if (currentSpeed > targetSpeed) {
+        currentSpeed = Math.max(targetSpeed, currentSpeed - deceleration * delta);
+    }
+    
+    // Get movement direction based on keys
+    direction.z = Number(moveBackward) - Number(moveForward); // Corrected direction
     direction.x = Number(moveRight) - Number(moveLeft);
-    direction.normalize();
     
-    // Move forward/backward
-    if (moveForward || moveBackward) {
-        velocity.z = direction.z * speed;
-    } else {
-        velocity.z = 0;
+    // Normalize for consistent speed in all directions, but only if actually moving
+    if (direction.x !== 0 || direction.z !== 0) {
+        direction.normalize();
     }
     
-    // Move left/right
-    if (moveLeft || moveRight) {
-        velocity.x = direction.x * speed;
-    } else {
-        velocity.x = 0;
-    }
+    // Apply the calculated speed
+    velocity.z = direction.z * currentSpeed;
+    velocity.x = direction.x * currentSpeed;
     
-    // Adjust movement direction based on camera rotation
-    const angle = camera.rotation.y;
-    const sin = Math.sin(angle);
-    const cos = Math.cos(angle);
+    // Get forward and right vectors from camera orientation
+    const cameraDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    cameraDirection.y = 0;
+    cameraDirection.normalize();
     
-    const vx = velocity.x * cos - velocity.z * sin;
-    const vz = velocity.x * sin + velocity.z * cos;
+    const cameraRight = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+    cameraRight.y = 0;
+    cameraRight.normalize();
     
-    // Move the camera (player)
-    camera.position.x += vx * delta;
-    camera.position.z += vz * delta;
-    camera.position.y += velocity.y * delta;
+    // Calculate movement vector relative to camera direction
+    const moveVector = new THREE.Vector3(0, 0, 0);
+    moveVector.addScaledVector(cameraDirection, -velocity.z);
+    moveVector.addScaledVector(cameraRight, velocity.x);
+    
+    // Apply movement
+    camera.position.x += moveVector.x * delta;
+    camera.position.z += moveVector.z * delta;
+    camera.position.y += velocity.y * delta; // Vertical movement from gravity/jumping
+    
+    // Update head bobbing
+    updateHeadBob(delta, currentSpeed);
     
     // Update FOV for speed effect
     updateFOV(delta);
@@ -328,14 +395,14 @@ function updatePlayer(delta) {
         canJump = true;
         isJumping = false;
         
-        // Reset bhop status after landing
+        // Reset bhop status after landing with more forgiving timing
         setTimeout(() => {
             isBhopping = false;
-        }, 300); // Increased from 200ms to give more time
+        }, 350); // Increased from 300ms for even more forgiveness
     }
     
     // Boundary checks to keep player within the play area
-    const boundaryLimit = 99; // Increased to match larger ground
+    const boundaryLimit = 99; // To match larger ground
     
     if (Math.abs(camera.position.x) > boundaryLimit) {
         camera.position.x = Math.sign(camera.position.x) * boundaryLimit;
@@ -356,24 +423,21 @@ function updateFOV(delta) {
     
     // Adjust FOV
     if (isMoving) {
-        // Gradually increase FOV when moving
-        if (camera.fov < runningFOV) {
-            camera.fov += fovChangeSpeed * delta * 10;
-            if (camera.fov > runningFOV) camera.fov = runningFOV;
-            camera.updateProjectionMatrix();
-        }
+        // More aggressive FOV increase based on current speed
+        const targetFOV = defaultFOV + (currentSpeed / playerSpeed) * (runningFOV - defaultFOV);
+        
+        // Smoothly transition to target FOV
+        camera.fov += (targetFOV - camera.fov) * fovChangeSpeed * delta;
+        camera.updateProjectionMatrix();
     } else {
-        // Gradually decrease FOV when standing still
-        if (camera.fov > defaultFOV) {
-            camera.fov -= fovChangeSpeed * delta * 10;
-            if (camera.fov < defaultFOV) camera.fov = defaultFOV;
-            camera.updateProjectionMatrix();
-        }
+        // Smoothly return to default FOV when not moving
+        camera.fov += (defaultFOV - camera.fov) * fovChangeSpeed * delta;
+        camera.updateProjectionMatrix();
     }
     
-    // Increase FOV more when bhopping
-    if (isBhopping && camera.fov < runningFOV + 5) {
-        camera.fov += fovChangeSpeed * delta * 15;
+    // Additional FOV boost during bhop
+    if (isBhopping) {
+        camera.fov += (runningFOV + 8 - camera.fov) * fovChangeSpeed * delta;
         camera.updateProjectionMatrix();
     }
 }
@@ -383,6 +447,7 @@ function updateDebugInfo() {
     debugInfo.innerHTML = `
         Position: (${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)})<br>
         Velocity: (${velocity.x.toFixed(2)}, ${velocity.y.toFixed(2)}, ${velocity.z.toFixed(2)})<br>
+        Current Speed: ${currentSpeed.toFixed(2)}<br>
         FOV: ${camera.fov.toFixed(1)}<br>
         Can Jump: ${canJump}<br>
         Is Jumping: ${isJumping}<br>
@@ -390,6 +455,7 @@ function updateDebugInfo() {
         Jump Time: ${jumpTime}<br>
         Last Jump Time: ${lastJumpTime}<br>
         Time Since Last Jump: ${jumpTime - lastJumpTime}ms<br>
+        Head Bob: ${bobActive ? 'Active' : 'Inactive'}<br>
         Enemy Count: ${enemies.length}
     `;
 }
