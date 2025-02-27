@@ -260,11 +260,9 @@ export class EntityManager {
                 console.log('Player collided with enemy!');
                 this.handlePlayerDamage();
                 
-                // If the player is moving fast enough, trigger slow-motion
-                if (this.player.currentSpeed > 15) { // Threshold speed
-                    // Slow down to 20% speed for 1.5 seconds
-                    this.game.slowMotionManager.triggerSlowMotion(0.2, 1.5);
-                }
+                // Always trigger slow-motion on enemy collision
+                // Slow down to 25% speed for 1.2 seconds
+                this.game.slowMotionManager.triggerSlowMotion(0.25, 1.2);
                 
                 // Add some knockback to the player
                 if (this.player) {

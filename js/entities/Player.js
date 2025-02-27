@@ -261,8 +261,8 @@ export class Player extends PhysicsEntity {
     applyKnockback(direction, force) {
         this.knockbackVelocity.copy(direction).multiplyScalar(force);
         
-        // Add upward component
-        this.knockbackVelocity.y += force * 0.5;
+        // Add upward component (reduced from 0.5 to 0.15 to minimize excessive upward force)
+        this.knockbackVelocity.y += force * 0.15;
         
         // Apply to velocity
         this.velocity.add(this.knockbackVelocity);
