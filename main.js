@@ -9,13 +9,21 @@ let moveForward = false;
 let moveBackward = false;
 let moveLeft = false;
 let moveRight = false;
+let isSprinting = false;
+let isWalking = false;
 let canJump = false;
 let isJumping = false;
 let isBhopping = false;
 let jumpTime = 0;
 let lastJumpTime = 0;
 const BHOP_WINDOW = 450; // ms window to perform a successful bhop
-const BHOP_BOOST = 2.0; // Speed multiplier for successful bhop
+
+// Bhop variables for gradual speed increase
+let bhopChainCount = 0;
+const MAX_BHOP_CHAIN = 10; // Maximum number of consecutive bhops
+const BHOP_BASE_BOOST = 1.2; // Initial speed boost
+const BHOP_MAX_BOOST = 2.5; // Maximum speed boost after MAX_BHOP_CHAIN
+let currentBhopBoost = BHOP_BASE_BOOST;
 
 // Physics variables
 let velocity = new THREE.Vector3();
@@ -23,25 +31,36 @@ const direction = new THREE.Vector3();
 const playerHeight = 2;
 const gravity = 30;
 const jumpForce = 12;
-const playerSpeed = 12;
+const walkSpeed = 6;     // Walking speed
+const runSpeed = 12;     // Normal running speed
+const sprintSpeed = 20;  // Sprinting speed
+let playerSpeed = runSpeed; // Default speed
 
 // Movement control variables for smoother acceleration/deceleration
 let currentSpeed = 0;
-const acceleration = 100; // Increased for more responsive acceleration
-const deceleration = 80;  // Increased for more responsive deceleration
-const maxSpeed = 24;      // Maximum possible speed
+const acceleration = 80;       // Reduced for smoother acceleration
+const deceleration = 60;       // Reduced for smoother deceleration
+const sprintAcceleration = 120; // Faster acceleration when sprinting
+const walkAcceleration = 40;    // Slower acceleration when walking
+const maxSpeed = 30;            // Maximum possible speed with bhop
 
 // FOV variables
 const defaultFOV = 75;
-const runningFOV = 90;
-const fovChangeSpeed = 10;
+const runningFOV = 85;
+const sprintingFOV = 95;
+const walkingFOV = 65;
+const fovChangeSpeed = 5; // Reduced for smoother transitions
 
 // Head bobbing variables
 let bobTimer = 0;
-const bobAmplitude = 0.08; // Increased for more noticeable effect
-const bobFrequency = 12;   // Slightly increased frequency
+const bobAmplitude = 0.035; // Significantly reduced for subtler effect
+const sprintBobAmplitude = 0.05;
+const walkBobAmplitude = 0.02;
+const bobFrequency = 8;   // Reduced for smoother bobbing
+let currentBobAmplitude = bobAmplitude;
 let bobActive = false;
 let bobHeight = 0;
+let lastBobHeight = 0; // For dampening
 
 // Mouse look variables
 let mouseSensitivity = 0.002;
@@ -66,6 +85,7 @@ function init() {
     // Create the scene
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x87CEEB); // Sky blue background
+    scene.fog = new THREE.Fog(0x87CEEB, 50, 150); // Add fog for better distance perception
 
     // Create the camera (first-person perspective)
     camera = new THREE.PerspectiveCamera(defaultFOV, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -416,6 +436,22 @@ function onKeyDown(event) {
         case 'KeyD':
             moveRight = true;
             break;
+        case 'ShiftLeft':
+        case 'ShiftRight':
+            // Enable sprinting
+            isSprinting = true;
+            isWalking = false;
+            updateMovementMode();
+            break;
+        case 'AltLeft':
+        case 'AltRight':
+        case 'ControlLeft':
+        case 'ControlRight':
+            // Enable walking
+            isWalking = true;
+            isSprinting = false;
+            updateMovementMode();
+            break;
         case 'Space':
             if (canJump) {
                 // Regular jump
@@ -427,17 +463,27 @@ function onKeyDown(event) {
                 // Check for bhop timing
                 const timeSinceLastJump = jumpTime - lastJumpTime;
                 if (timeSinceLastJump <= BHOP_WINDOW && timeSinceLastJump > 0) {
-                    isBhopping = true;
-                    console.log('BHOP activated!');
+                    // Successful bhop - increase counter
+                    bhopChainCount = Math.min(MAX_BHOP_CHAIN, bhopChainCount + 1);
                     
-                    // Show bhop indicator
+                    // Calculate bhop boost based on chain count
+                    currentBhopBoost = BHOP_BASE_BOOST + ((BHOP_MAX_BOOST - BHOP_BASE_BOOST) * (bhopChainCount / MAX_BHOP_CHAIN));
+                    
+                    isBhopping = true;
+                    console.log(`BHOP activated! Chain: ${bhopChainCount}, Boost: ${currentBhopBoost.toFixed(2)}x`);
+                    
+                    // Update bhop indicator
+                    bhopIndicator.textContent = `BHOP x${bhopChainCount} (${currentBhopBoost.toFixed(2)}x)`;
                     bhopIndicator.classList.add('active');
                     setTimeout(() => {
                         bhopIndicator.classList.remove('active');
                     }, 1000);
                     
                 } else {
+                    // Failed bhop chain - reset counter
                     isBhopping = false;
+                    bhopChainCount = 0;
+                    currentBhopBoost = BHOP_BASE_BOOST;
                 }
                 
                 lastJumpTime = jumpTime;
@@ -461,6 +507,32 @@ function onKeyUp(event) {
         case 'KeyD':
             moveRight = false;
             break;
+        case 'ShiftLeft':
+        case 'ShiftRight':
+            isSprinting = false;
+            updateMovementMode();
+            break;
+        case 'AltLeft':
+        case 'AltRight':
+        case 'ControlLeft':
+        case 'ControlRight':
+            isWalking = false;
+            updateMovementMode();
+            break;
+    }
+}
+
+// Update movement mode (walking/running/sprinting)
+function updateMovementMode() {
+    if (isSprinting) {
+        playerSpeed = sprintSpeed;
+        currentBobAmplitude = sprintBobAmplitude;
+    } else if (isWalking) {
+        playerSpeed = walkSpeed;
+        currentBobAmplitude = walkBobAmplitude;
+    } else {
+        playerSpeed = runSpeed;
+        currentBobAmplitude = bobAmplitude;
     }
 }
 
@@ -471,32 +543,33 @@ function onWindowResize() {
     renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
-// Update head bobbing effect when moving
+// Update head bobbing effect when moving - significantly improved for smoothness
 function updateHeadBob(delta, speed) {
     if ((moveForward || moveBackward || moveLeft || moveRight) && canJump) {
         // Only bob when moving and grounded
         bobActive = true;
-        bobTimer += delta * speed * bobFrequency;
         
-        // More natural bobbing with combined vertical and horizontal movement
-        const verticalBob = Math.sin(bobTimer) * bobAmplitude;
-        const lateralBob = Math.sin(bobTimer * 0.5) * bobAmplitude * 0.5;
+        // Scale bobbing speed with movement speed
+        const speedFactor = speed / runSpeed;
+        bobTimer += delta * speedFactor * bobFrequency;
         
-        // Apply bobbing to the camera
-        camera.position.y = verticalBob;
-        camera.position.x = lateralBob;
-    } else {
+        // Calculate bob effect with dampening for smoother motion
+        const verticalBob = Math.sin(bobTimer) * currentBobAmplitude * speedFactor;
+        const lateralBob = Math.cos(bobTimer * 0.5) * currentBobAmplitude * 0.5 * speedFactor;
+        
+        // Dampen the transition - lerp between current and target values
+        const dampFactor = 0.15;
+        camera.position.y += (verticalBob - camera.position.y) * dampFactor;
+        camera.position.x += (lateralBob - camera.position.x) * dampFactor;
+    } else if (bobActive) {
+        // Gradually fade out the bob when stopping
         bobActive = false;
+        const dampFactor = 0.1;
+        camera.position.y *= (1 - dampFactor);
+        camera.position.x *= (1 - dampFactor);
         
-        // Smoothly reset camera position
-        camera.position.y *= 0.8;
-        camera.position.x *= 0.8;
-        
-        if (Math.abs(camera.position.y) < 0.01) camera.position.y = 0;
-        if (Math.abs(camera.position.x) < 0.01) camera.position.x = 0;
-        
-        // Gradually reset bob timer when not moving
-        bobTimer = 0;
+        if (Math.abs(camera.position.y) < 0.002) camera.position.y = 0;
+        if (Math.abs(camera.position.x) < 0.002) camera.position.x = 0;
     }
 }
 
@@ -549,16 +622,27 @@ function updatePlayer(delta) {
     // Apply gravity
     velocity.y -= gravity * delta;
     
-    // Calculate the target speed based on input and bhop status
+    // Update movement mode based on keys
+    updateMovementMode();
+    
+    // Calculate the target speed based on input, bhop status, and movement mode
     let targetSpeed = 0;
     if (moveForward || moveBackward || moveLeft || moveRight) {
-        targetSpeed = isBhopping ? playerSpeed * BHOP_BOOST : playerSpeed;
+        targetSpeed = isBhopping ? playerSpeed * currentBhopBoost : playerSpeed;
         targetSpeed = Math.min(targetSpeed, maxSpeed);
+    }
+    
+    // Determine which acceleration rate to use based on movement mode
+    let currentAcceleration = acceleration;
+    if (isSprinting) {
+        currentAcceleration = sprintAcceleration;
+    } else if (isWalking) {
+        currentAcceleration = walkAcceleration;
     }
     
     // Smooth acceleration and deceleration
     if (currentSpeed < targetSpeed) {
-        currentSpeed = Math.min(targetSpeed, currentSpeed + acceleration * delta);
+        currentSpeed = Math.min(targetSpeed, currentSpeed + currentAcceleration * delta);
     } else if (currentSpeed > targetSpeed) {
         currentSpeed = Math.max(targetSpeed, currentSpeed - deceleration * delta);
     }
@@ -612,7 +696,7 @@ function updatePlayer(delta) {
     // Apply vertical movement (gravity/jumping)
     yawObject.position.y += velocity.y * delta;
     
-    // Update head bobbing
+    // Update head bobbing with smoother implementation
     updateHeadBob(delta, currentSpeed);
     
     // Update FOV for speed effect
@@ -648,28 +732,27 @@ function updatePlayer(delta) {
 
 // Update FOV based on movement to enhance speed sensation
 function updateFOV(delta) {
-    // Determine if player is moving
-    const isMoving = moveForward || moveBackward || moveLeft || moveRight;
-    
-    // Calculate target FOV based on speed
+    // Determine base target FOV based on movement mode
     let targetFOV = defaultFOV;
     
-    if (isMoving) {
-        // Scale FOV based on current speed relative to base speed
-        const speedRatio = currentSpeed / playerSpeed;
-        targetFOV = defaultFOV + (speedRatio * (runningFOV - defaultFOV));
-        
-        // Extra FOV boost during bhop
-        if (isBhopping) {
-            targetFOV += 10;
-        }
+    if (isSprinting) {
+        targetFOV = sprintingFOV;
+    } else if (isWalking) {
+        targetFOV = walkingFOV;
+    } else if (moveForward || moveBackward || moveLeft || moveRight) {
+        targetFOV = runningFOV;
+    }
+    
+    // Add additional FOV boost during bhop proportional to chain count
+    if (isBhopping) {
+        targetFOV += bhopChainCount * 1.5; // Add 1.5 degrees per bhop in chain
     }
     
     // Smooth transition to target FOV
     camera.fov += (targetFOV - camera.fov) * fovChangeSpeed * delta;
     
     // Ensure FOV stays within reasonable bounds
-    camera.fov = Math.max(defaultFOV, Math.min(runningFOV + 15, camera.fov));
+    camera.fov = Math.max(walkingFOV - 5, Math.min(sprintingFOV + 20, camera.fov));
     
     // Update projection matrix when FOV changes
     camera.updateProjectionMatrix();
@@ -679,16 +762,12 @@ function updateFOV(delta) {
 function updateDebugInfo() {
     debugInfo.innerHTML = `
         Position: (${yawObject.position.x.toFixed(2)}, ${yawObject.position.y.toFixed(2)}, ${yawObject.position.z.toFixed(2)})<br>
-        Velocity: (${velocity.x.toFixed(2)}, ${velocity.y.toFixed(2)}, ${velocity.z.toFixed(2)})<br>
-        Current Speed: ${currentSpeed.toFixed(2)}<br>
+        Speed: ${currentSpeed.toFixed(2)} (${isSprinting ? 'Sprinting' : isWalking ? 'Walking' : 'Running'})<br>
         FOV: ${camera.fov.toFixed(1)}<br>
-        Can Jump: ${canJump}<br>
-        Is Jumping: ${isJumping}<br>
-        Bhop Active: ${isBhopping}<br>
-        Last Jump Time: ${lastJumpTime}<br>
-        Time Since Last Jump: ${Date.now() - lastJumpTime}ms<br>
-        Head Bob: ${bobActive ? 'Active' : 'Inactive'}<br>
-        Enemy Count: ${enemies.length}
+        Bhop Chain: ${bhopChainCount} (Boost: ${currentBhopBoost.toFixed(2)}x)<br>
+        Controls: WASD (move), SHIFT (sprint), ALT/CTRL (walk)<br>
+        Movement Status: ${canJump ? 'Grounded' : 'In Air'}, ${isBhopping ? 'Bhop Active' : ''}<br>
+        Enemies: ${enemies.length}
     `;
 }
 
