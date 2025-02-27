@@ -94,13 +94,36 @@
             font-family: monospace;
             text-align: center;
             padding: 8px 15px;
-            background-color: rgba(0, 0, 0, 0.5);
+            background-color: rgba(0, 0, 0, 0.7);
             border-radius: 20px;
             opacity: 0;
             transition: opacity 0.3s;
+            font-size: 16px;
+            font-weight: bold;
+            text-shadow: 0 0 5px rgba(255, 255, 255, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            z-index: 100;
         }
         #indicator.active {
             opacity: 1;
+            animation: pulse 0.5s infinite alternate;
+        }
+        @keyframes pulse {
+            0% { background-color: rgba(0, 0, 0, 0.7); }
+            100% { background-color: rgba(100, 100, 255, 0.7); }
+        }
+        #movement-indicator {
+            position: absolute;
+            bottom: 60px;
+            right: 20px;
+            color: white;
+            font-family: monospace;
+            text-align: center;
+            padding: 5px 10px;
+            background-color: rgba(0, 0, 0, 0.5);
+            border-radius: 5px;
+            font-size: 14px;
+            z-index: 10;
         }
     </style>
 </head>
@@ -110,13 +133,16 @@
     </div>
     <div id="crosshair"></div>
     <div id="indicator">BHOP ACTIVATED!</div>
+    <div id="movement-indicator">RUNNING</div>
     <div id="instructions">
         <h1>Nextbot FPS Prototype</h1>
         <p>Click to enable controls</p>
         <p><strong>WASD</strong> - Movement</p>
+        <p><strong>SHIFT</strong> - Sprint</p>
+        <p><strong>ALT/CTRL</strong> - Walk</p>
         <p><strong>SPACE</strong> - Jump / Bunny Hop</p>
         <p><strong>ESC</strong> - Release pointer lock</p>
-        <p>Activate bunny hop by timing your jumps just after landing!</p>
+        <p>Chain bunny hops for increased speed boost!</p>
     </div>
     <canvas id="game-canvas"></canvas>
 
