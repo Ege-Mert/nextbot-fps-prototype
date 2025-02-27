@@ -17,7 +17,6 @@ let isBhopping = false;
 let jumpTime = 0;
 let lastJumpTime = 0;
 let lastLandTime = 0; // Track when the player last landed
-const BHOP_WINDOW = 450; // ms window to perform a successful bhop
 
 // Bhop variables for gradual speed increase
 let bhopChainCount = 0;
@@ -26,6 +25,13 @@ const BHOP_BASE_BOOST = 1.2; // Initial speed boost
 const BHOP_MAX_BOOST = 2.5; // Maximum speed boost after MAX_BHOP_CHAIN
 let currentBhopBoost = BHOP_BASE_BOOST;
 let bhopResetTimer = null; // Timer for resetting bhop state
+// Refined bhop window and momentum system
+const BHOP_PERFECT_WINDOW = 200; // ms for perfect timing (max boost)
+const BHOP_GOOD_WINDOW = 350;    // ms for good timing (medium boost)
+const BHOP_MAX_WINDOW = 450;     // ms for acceptable timing (min boost)
+const BHOP_MOMENTUM_DECAY = 0.05; // How quickly bhop momentum decays when not jumping
+let bhopMomentum = 0; // 0-1 value representing built-up momentum
+let lastBhopQuality = 0; // 0-1 value representing the quality of last bhop
 
 // Physics variables
 let velocity = new THREE.Vector3();
@@ -40,11 +46,13 @@ let playerSpeed = runSpeed; // Default speed
 
 // Movement control variables for smoother acceleration/deceleration
 let currentSpeed = 0;
+let targetSpeed = 0;
 const acceleration = 80;       // Reduced for smoother acceleration
 const deceleration = 60;       // Reduced for smoother deceleration
 const sprintAcceleration = 120; // Faster acceleration when sprinting
 const walkAcceleration = 40;    // Slower acceleration when walking
-const maxSpeed = 30;            // Maximum possible speed with bhop
+const maxSpeed = 35;            // Maximum possible speed with bhop
+const airControl = 0.3;         // 0-1 factor for how much control in air (lower = less)
 
 // FOV variables
 const defaultFOV = 75;
@@ -70,13 +78,34 @@ let pitchObject, yawObject;
 
 // Enemy variables
 let enemies = [];
-const ENEMY_SPEED = 5;
+const ENEMY_SPEED_MIN = 4.5;
+const ENEMY_SPEED_MAX = 7.5;
 const ENEMY_HEIGHT = 2.5;
-const ENEMY_SPAWN_DISTANCE = 30;
+const ENEMY_SPAWN_DISTANCE = 35;
 const MAX_ENEMIES = 3;
+const ENEMY_PATH_UPDATE_INTERVAL = 500; // ms between path recalculation
+const ENEMY_PERCEPTION_RANGE = 50; // How far enemies can "see" the player
+const ENEMY_STUN_DURATION = 2000; // ms that enemy is stunned after hitting an obstacle
+
+// Pathfinding grid
+const GRID_SIZE = 2; // Size of each grid cell
+const GRID_WIDTH = 200; // Width of the grid
+const GRID_HEIGHT = 200; // Height of the grid
+let pathfindingGrid = [];
+
+// Visual effects variables
+const particleSystem = {
+    bhopParticles: [],
+    maxParticles: 50
+};
+
+// Sound variables
+let audioListener;
+let sounds = {};
 
 // Debug variables
 let showDebugBhop = false; // Show detailed bhop debugging
+let showDebugPaths = false; // Show enemy pathfinding
 
 // Initialize the scene, camera, and renderer
 function init() {
@@ -96,6 +125,9 @@ function init() {
     // Create the camera (first-person perspective)
     camera = new THREE.PerspectiveCamera(defaultFOV, window.innerWidth / window.innerHeight, 0.1, 1000);
     
+    // Set up audio
+    setupAudio();
+    
     // Set up player object as a container for the camera
     player = new THREE.Object3D();
     scene.add(player);
@@ -112,10 +144,11 @@ function init() {
     // Add player to the scene
     player.add(yawObject);
 
-    // Create the renderer
+    // Create the renderer with better performance settings
     renderer = new THREE.WebGLRenderer({
         canvas: canvas,
-        antialias: true
+        antialias: true,
+        powerPreference: 'high-performance'
     });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
@@ -128,7 +161,7 @@ function init() {
     const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
     directionalLight.position.set(5, 10, 7.5);
     directionalLight.castShadow = true;
-    // Improve shadow quality
+    // Improve shadow quality but limit shadow map for performance
     directionalLight.shadow.mapSize.width = 1024;
     directionalLight.shadow.mapSize.height = 1024;
     directionalLight.shadow.camera.near = 0.5;
@@ -141,6 +174,12 @@ function init() {
     // Add some obstacles for better gameplay
     createObstacles();
     
+    // Initialize pathfinding grid
+    initializePathfindingGrid();
+    
+    // Setup visual effects
+    setupVisualEffects();
+    
     // Spawn initial enemies
     spawnEnemies(MAX_ENEMIES);
 
@@ -149,6 +188,381 @@ function init() {
     
     // Start the animation loop
     animate();
+}
+
+// Set up audio system
+function setupAudio() {
+    // Create an audio listener and add it to the camera
+    audioListener = new THREE.AudioListener();
+    camera.add(audioListener);
+    
+    // Jump sound
+    const jumpSound = new THREE.Audio(audioListener);
+    const bhopSound = new THREE.Audio(audioListener);
+    const footstepSound = new THREE.Audio(audioListener);
+    
+    // Load sounds (would normally be external, using placeholders)
+    const audioLoader = new THREE.AudioLoader();
+    
+    // Initialize sound placeholders (would be loaded from files)
+    sounds.jump = jumpSound;
+    sounds.bhop = bhopSound;
+    sounds.footstep = footstepSound;
+}
+
+// Set up visual effects systems
+function setupVisualEffects() {
+    // Create particle geometry for bhop effects
+    const particleGeometry = new THREE.BufferGeometry();
+    const particlePositions = new Float32Array(particleSystem.maxParticles * 3);
+    const particleSizes = new Float32Array(particleSystem.maxParticles);
+    
+    // Initialize particle positions off-screen
+    for (let i = 0; i < particleSystem.maxParticles; i++) {
+        particlePositions[i * 3] = 0;
+        particlePositions[i * 3 + 1] = -100; // Below ground
+        particlePositions[i * 3 + 2] = 0;
+        particleSizes[i] = 0.1;
+    }
+    
+    particleGeometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+    particleGeometry.setAttribute('size', new THREE.BufferAttribute(particleSizes, 1));
+    
+    // Create particle material
+    const particleMaterial = new THREE.PointsMaterial({
+        color: 0x88ccff,
+        size: 0.5,
+        transparent: true,
+        opacity: 0.7,
+        sizeAttenuation: true
+    });
+    
+    // Create particle system
+    const particles = new THREE.Points(particleGeometry, particleMaterial);
+    scene.add(particles);
+    
+    particleSystem.geometry = particleGeometry;
+    particleSystem.material = particleMaterial;
+    particleSystem.particles = particles;
+}
+
+// Create a bhop particle effect at player's position
+function createBhopEffect() {
+    // Create particles around player's feet
+    const particleCount = 10 + Math.floor(bhopChainCount * 3);
+    const positions = particleSystem.geometry.attributes.position.array;
+    const sizes = particleSystem.geometry.attributes.size.array;
+    
+    for (let i = 0; i < particleCount; i++) {
+        const index = i % particleSystem.maxParticles;
+        
+        // Set position at player's feet with random spread
+        positions[index * 3] = yawObject.position.x + (Math.random() - 0.5) * 2;
+        positions[index * 3 + 1] = playerHeight * 0.1 + Math.random() * 0.1;
+        positions[index * 3 + 2] = yawObject.position.z + (Math.random() - 0.5) * 2;
+        
+        // Set size based on bhop chain
+        sizes[index] = 0.3 + Math.min(0.5, bhopChainCount * 0.05);
+        
+        // Create particle object for updating
+        particleSystem.bhopParticles.push({
+            index: index,
+            life: 0,
+            maxLife: 30 + Math.random() * 20,
+            velocity: new THREE.Vector3(
+                (Math.random() - 0.5) * 0.2,
+                0.1 + Math.random() * 0.2,
+                (Math.random() - 0.5) * 0.2
+            )
+        });
+    }
+    
+    particleSystem.geometry.attributes.position.needsUpdate = true;
+    particleSystem.geometry.attributes.size.needsUpdate = true;
+}
+
+// Update particle effects
+function updateParticles(delta) {
+    const positions = particleSystem.geometry.attributes.position.array;
+    const sizes = particleSystem.geometry.attributes.size.array;
+    
+    // Update bhop particles
+    for (let i = particleSystem.bhopParticles.length - 1; i >= 0; i--) {
+        const particle = particleSystem.bhopParticles[i];
+        particle.life += delta * 60;
+        
+        if (particle.life >= particle.maxLife) {
+            // Remove dead particles
+            positions[particle.index * 3 + 1] = -100; // Move below ground
+            sizes[particle.index] = 0;
+            particleSystem.bhopParticles.splice(i, 1);
+        } else {
+            // Update particle position
+            positions[particle.index * 3] += particle.velocity.x;
+            positions[particle.index * 3 + 1] += particle.velocity.y;
+            positions[particle.index * 3 + 2] += particle.velocity.z;
+            
+            // Apply gravity to particle
+            particle.velocity.y -= 0.01;
+            
+            // Fade out particle
+            const lifeRatio = particle.life / particle.maxLife;
+            sizes[particle.index] *= 0.98;
+        }
+    }
+    
+    particleSystem.geometry.attributes.position.needsUpdate = true;
+    particleSystem.geometry.attributes.size.needsUpdate = true;
+}
+
+// Initialize the pathfinding grid
+function initializePathfindingGrid() {
+    // Create empty grid
+    pathfindingGrid = new Array(Math.ceil(GRID_WIDTH / GRID_SIZE));
+    for (let x = 0; x < pathfindingGrid.length; x++) {
+        pathfindingGrid[x] = new Array(Math.ceil(GRID_HEIGHT / GRID_SIZE));
+        for (let z = 0; z < pathfindingGrid[x].length; z++) {
+            pathfindingGrid[x][z] = 1; // 1 = walkable, 0 = obstacle
+        }
+    }
+    
+    // Mark obstacle positions in grid
+    scene.children.forEach(child => {
+        if (child.userData && child.userData.isObstacle) {
+            const box = new THREE.Box3().setFromObject(child);
+            
+            // Convert world coordinates to grid coordinates
+            const minX = Math.floor((box.min.x + GRID_WIDTH/2) / GRID_SIZE);
+            const maxX = Math.ceil((box.max.x + GRID_WIDTH/2) / GRID_SIZE);
+            const minZ = Math.floor((box.min.z + GRID_HEIGHT/2) / GRID_SIZE);
+            const maxZ = Math.ceil((box.max.z + GRID_HEIGHT/2) / GRID_SIZE);
+            
+            // Mark cells as obstacles
+            for (let x = minX; x < maxX; x++) {
+                for (let z = minZ; z < maxZ; z++) {
+                    if (x >= 0 && x < pathfindingGrid.length && 
+                        z >= 0 && z < pathfindingGrid[0].length) {
+                        pathfindingGrid[x][z] = 0; // 0 = obstacle
+                    }
+                }
+            }
+        }
+    });
+}
+
+// Convert world coordinates to grid coordinates
+function worldToGrid(position) {
+    const x = Math.floor((position.x + GRID_WIDTH/2) / GRID_SIZE);
+    const z = Math.floor((position.z + GRID_HEIGHT/2) / GRID_SIZE);
+    return { x, z };
+}
+
+// Convert grid coordinates to world coordinates
+function gridToWorld(gridX, gridZ) {
+    const x = (gridX * GRID_SIZE) - GRID_WIDTH/2 + GRID_SIZE/2;
+    const z = (gridZ * GRID_SIZE) - GRID_HEIGHT/2 + GRID_SIZE/2;
+    return { x, z };
+}
+
+// Find a path from start to end using A* algorithm
+function findPath(startPos, endPos) {
+    // Convert world positions to grid coordinates
+    const start = worldToGrid(startPos);
+    const end = worldToGrid(endPos);
+    
+    // Check if start or end are out of bounds or in obstacles
+    if (start.x < 0 || start.x >= pathfindingGrid.length || 
+        start.z < 0 || start.z >= pathfindingGrid[0].length ||
+        end.x < 0 || end.x >= pathfindingGrid.length || 
+        end.z < 0 || end.z >= pathfindingGrid[0].length ||
+        pathfindingGrid[start.x][start.z] === 0 ||
+        pathfindingGrid[end.x][end.z] === 0) {
+        return []; // No valid path
+    }
+    
+    // If start and end are same cell, return single point
+    if (start.x === end.x && start.z === end.z) {
+        const worldPos = gridToWorld(start.x, start.z);
+        return [new THREE.Vector3(worldPos.x, 0, worldPos.z)];
+    }
+    
+    // A* algorithm
+    const openSet = [];
+    const closedSet = new Set();
+    const gScore = {}; // Cost from start to current
+    const fScore = {}; // Estimated total cost
+    const cameFrom = {}; // To reconstruct path
+    
+    // Initialize start node
+    const startKey = `${start.x},${start.z}`;
+    gScore[startKey] = 0;
+    fScore[startKey] = heuristic(start, end);
+    openSet.push({ x: start.x, z: start.z, f: fScore[startKey] });
+    
+    while (openSet.length > 0) {
+        // Get node with lowest fScore
+        openSet.sort((a, b) => a.f - b.f);
+        const current = openSet.shift();
+        const currentKey = `${current.x},${current.z}`;
+        
+        // Check if reached end
+        if (current.x === end.x && current.z === end.z) {
+            // Reconstruct path
+            return reconstructPath(cameFrom, current);
+        }
+        
+        // Add to closed set
+        closedSet.add(currentKey);
+        
+        // Check neighbors
+        const neighbors = getNeighbors(current);
+        for (const neighbor of neighbors) {
+            const neighborKey = `${neighbor.x},${neighbor.z}`;
+            
+            // Skip if in closed set
+            if (closedSet.has(neighborKey)) continue;
+            
+            // Calculate tentative gScore
+            const tentativeGScore = gScore[currentKey] + 1;
+            
+            // If neighbor not in open set, add it
+            let inOpenSet = false;
+            for (let i = 0; i < openSet.length; i++) {
+                if (openSet[i].x === neighbor.x && openSet[i].z === neighbor.z) {
+                    inOpenSet = true;
+                    break;
+                }
+            }
+            
+            if (!inOpenSet) {
+                openSet.push({ 
+                    x: neighbor.x, 
+                    z: neighbor.z, 
+                    f: tentativeGScore + heuristic(neighbor, end) 
+                });
+            }
+            
+            // Update if better path found
+            if (tentativeGScore < (gScore[neighborKey] || Infinity)) {
+                cameFrom[neighborKey] = current;
+                gScore[neighborKey] = tentativeGScore;
+                fScore[neighborKey] = tentativeGScore + heuristic(neighbor, end);
+                
+                // Update fScore in openSet
+                for (let i = 0; i < openSet.length; i++) {
+                    if (openSet[i].x === neighbor.x && openSet[i].z === neighbor.z) {
+                        openSet[i].f = fScore[neighborKey];
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    // No path found
+    return [];
+}
+
+// Heuristic function for A* (Manhattan distance)
+function heuristic(a, b) {
+    return Math.abs(a.x - b.x) + Math.abs(a.z - b.z);
+}
+
+// Get walkable neighbors of a grid cell
+function getNeighbors(node) {
+    const neighbors = [];
+    const directions = [
+        { x: 0, z: 1 },  // North
+        { x: 1, z: 0 },  // East
+        { x: 0, z: -1 }, // South
+        { x: -1, z: 0 }, // West
+        { x: 1, z: 1 },  // Northeast
+        { x: 1, z: -1 }, // Southeast
+        { x: -1, z: -1 },// Southwest
+        { x: -1, z: 1 }  // Northwest
+    ];
+    
+    for (const dir of directions) {
+        const x = node.x + dir.x;
+        const z = node.z + dir.z;
+        
+        // Check bounds
+        if (x >= 0 && x < pathfindingGrid.length && 
+            z >= 0 && z < pathfindingGrid[0].length) {
+            // Check if walkable
+            if (pathfindingGrid[x][z] === 1) {
+                neighbors.push({ x, z });
+            }
+        }
+    }
+    
+    return neighbors;
+}
+
+// Reconstruct path from A* search
+function reconstructPath(cameFrom, current) {
+    const path = [];
+    let curr = current;
+    
+    while (curr) {
+        const worldPos = gridToWorld(curr.x, curr.z);
+        path.unshift(new THREE.Vector3(worldPos.x, 0, worldPos.z));
+        
+        const key = `${curr.x},${curr.z}`;
+        curr = cameFrom[key];
+    }
+    
+    // Optimize path by removing unnecessary waypoints
+    return simplifyPath(path);
+}
+
+// Simplify path by removing unnecessary waypoints
+function simplifyPath(path) {
+    if (path.length <= 2) return path;
+    
+    const simplified = [path[0]];
+    let i = 0;
+    
+    while (i < path.length - 2) {
+        // Check if we can move directly from current point to a further point
+        let furthestVisible = i + 1;
+        
+        for (let j = i + 2; j < path.length; j++) {
+            if (!lineOfSight(path[i], path[j])) {
+                break;
+            }
+            furthestVisible = j;
+        }
+        
+        simplified.push(path[furthestVisible]);
+        i = furthestVisible;
+    }
+    
+    // Add end point if not already added
+    if (simplified[simplified.length - 1] !== path[path.length - 1]) {
+        simplified.push(path[path.length - 1]);
+    }
+    
+    return simplified;
+}
+
+// Check if there's a clear line of sight between two points
+function lineOfSight(a, b) {
+    // Cast ray between points
+    const dir = new THREE.Vector3()
+        .subVectors(b, a)
+        .normalize();
+    
+    const raycaster = new THREE.Raycaster(a, dir);
+    const obstacles = scene.children.filter(child => 
+        child.userData && child.userData.isObstacle
+    );
+    
+    const distance = a.distanceTo(b);
+    const intersections = raycaster.intersectObjects(obstacles);
+    
+    // If any intersection is closer than target, line of sight is blocked
+    return intersections.length === 0 || intersections[0].distance > distance;
 }
 
 // Create the ground plane
@@ -180,7 +594,7 @@ function createGround() {
 // Create some obstacles for more interesting gameplay
 function createObstacles() {
     // Create a few boxes scattered around
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 15; i++) {
         const size = 2 + Math.random() * 3;
         const height = 1 + Math.random() * 4;
         
@@ -261,14 +675,61 @@ function createEnemy() {
     enemy.castShadow = true;
     enemy.receiveShadow = true;
     
-    // Add enemy to the scene and to our tracking array
+    // Add eyes to make it more intimidating
+    const eyeGeometry = new THREE.SphereGeometry(0.15, 16, 16);
+    const eyeMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    
+    const leftEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
+    leftEye.position.set(0.3, 0.7, 0.8);
+    enemy.add(leftEye);
+    
+    const rightEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
+    rightEye.position.set(-0.3, 0.7, 0.8);
+    enemy.add(rightEye);
+    
+    // Add pupil
+    const pupilGeometry = new THREE.SphereGeometry(0.05, 8, 8);
+    const pupilMaterial = new THREE.MeshBasicMaterial({ color: 0x000000 });
+    
+    const leftPupil = new THREE.Mesh(pupilGeometry, pupilMaterial);
+    leftPupil.position.set(0, 0, 0.1);
+    leftEye.add(leftPupil);
+    
+    const rightPupil = new THREE.Mesh(pupilGeometry, pupilMaterial);
+    rightPupil.position.set(0, 0, 0.1);
+    rightEye.add(rightPupil);
+    
+    // Add enemy to the scene
     scene.add(enemy);
+    
+    // Create path visualization lines
+    const pathLineMaterial = new THREE.LineBasicMaterial({ 
+        color: 0xff0000,
+        transparent: true,
+        opacity: 0.5
+    });
+    const pathLineGeometry = new THREE.BufferGeometry();
+    const pathLine = new THREE.Line(pathLineGeometry, pathLineMaterial);
+    pathLine.visible = showDebugPaths;
+    scene.add(pathLine);
     
     // Create enemy object with properties
     const enemyObj = {
         mesh: enemy,
-        speed: ENEMY_SPEED * (0.8 + Math.random() * 0.4), // Vary speed slightly
-        boundingBox: new THREE.Box3().setFromObject(enemy)
+        speed: ENEMY_SPEED_MIN + Math.random() * (ENEMY_SPEED_MAX - ENEMY_SPEED_MIN),
+        baseSpeed: ENEMY_SPEED_MIN + Math.random() * (ENEMY_SPEED_MAX - ENEMY_SPEED_MIN),
+        boundingBox: new THREE.Box3().setFromObject(enemy),
+        lastPathUpdate: 0,
+        lastPlayerPos: new THREE.Vector3(),
+        path: [],
+        currentPathIndex: 0,
+        pathLine: pathLine,
+        stunned: false,
+        stunnedUntil: 0,
+        leftEye: leftEye,
+        rightEye: rightEye,
+        leftPupil: leftPupil,
+        rightPupil: rightPupil
     };
     
     enemies.push(enemyObj);
@@ -285,63 +746,141 @@ function spawnEnemies(count) {
 
 // Update enemy positions and AI
 function updateEnemies(delta) {
+    const now = Date.now();
+    
     enemies.forEach(enemy => {
+        // Skip update if enemy is stunned
+        if (enemy.stunned) {
+            if (now > enemy.stunnedUntil) {
+                enemy.stunned = false;
+                enemy.mesh.material.color.set(0xff0000); // Reset color
+            } else {
+                // Flash color while stunned
+                const flashSpeed = 200;
+                if (Math.floor(now / flashSpeed) % 2 === 0) {
+                    enemy.mesh.material.color.set(0xff0000);
+                } else {
+                    enemy.mesh.material.color.set(0x666666);
+                }
+                return;
+            }
+        }
+        
         // Get player position
         const playerPosition = new THREE.Vector3();
         yawObject.getWorldPosition(playerPosition);
         
-        // Update the enemy's position to move towards the player
-        const direction = new THREE.Vector3();
-        direction.subVectors(playerPosition, enemy.mesh.position).normalize();
+        // Adjust eye pupils to look at player
+        updateEnemyEyes(enemy, playerPosition);
         
-        // Don't change the y-position (keep enemy on the ground)
-        direction.y = 0;
-        
-        // Calculate potential new position
-        const newPosition = new THREE.Vector3(
-            enemy.mesh.position.x + direction.x * enemy.speed * delta,
-            enemy.mesh.position.y,
-            enemy.mesh.position.z + direction.z * enemy.speed * delta
-        );
-        
-        // Check for collisions with obstacles
-        const canMove = !checkObstacleCollision(enemy.mesh.position, newPosition, 1.5);
-        
-        // Move the enemy towards the player if no obstacles in the way
-        if (canMove) {
-            enemy.mesh.position.copy(newPosition);
+        // Check if within perception range
+        const distToPlayer = playerPosition.distanceTo(enemy.mesh.position);
+        if (distToPlayer > ENEMY_PERCEPTION_RANGE) {
+            // Enemy can't see player, wander randomly
+            if (enemy.path.length === 0 || enemy.currentPathIndex >= enemy.path.length) {
+                const randomAngle = Math.random() * Math.PI * 2;
+                const randomDist = 10 + Math.random() * 20;
+                const randomTarget = new THREE.Vector3(
+                    enemy.mesh.position.x + Math.cos(randomAngle) * randomDist,
+                    0,
+                    enemy.mesh.position.z + Math.sin(randomAngle) * randomDist
+                );
+                enemy.path = findPath(enemy.mesh.position, randomTarget);
+                enemy.currentPathIndex = 0;
+                updatePathVisualization(enemy);
+            }
         } else {
-            // Simple obstacle avoidance - try to move around the obstacle
-            const leftDirection = new THREE.Vector3(-direction.z, 0, direction.x).normalize();
-            const rightDirection = new THREE.Vector3(direction.z, 0, -direction.x).normalize();
+            // Check if path needs updating
+            const playerMoved = (enemy.lastPlayerPos.distanceTo(playerPosition) > 5);
+            const needsPathUpdate = (now - enemy.lastPathUpdate > ENEMY_PATH_UPDATE_INTERVAL) || 
+                                  playerMoved || 
+                                  enemy.path.length === 0 || 
+                                  enemy.currentPathIndex >= enemy.path.length;
             
-            // Try moving to the left
-            const leftPosition = new THREE.Vector3(
-                enemy.mesh.position.x + leftDirection.x * enemy.speed * delta,
-                enemy.mesh.position.y,
-                enemy.mesh.position.z + leftDirection.z * enemy.speed * delta
-            );
-            
-            // Try moving to the right
-            const rightPosition = new THREE.Vector3(
-                enemy.mesh.position.x + rightDirection.x * enemy.speed * delta,
-                enemy.mesh.position.y,
-                enemy.mesh.position.z + rightDirection.z * enemy.speed * delta
-            );
-            
-            // Check which direction is clearer
-            const leftClear = !checkObstacleCollision(enemy.mesh.position, leftPosition, 1.5);
-            const rightClear = !checkObstacleCollision(enemy.mesh.position, rightPosition, 1.5);
-            
-            if (leftClear) {
-                enemy.mesh.position.copy(leftPosition);
-            } else if (rightClear) {
-                enemy.mesh.position.copy(rightPosition);
+            if (needsPathUpdate) {
+                // Update path to player
+                enemy.path = findPath(enemy.mesh.position, playerPosition);
+                enemy.currentPathIndex = 0;
+                enemy.lastPathUpdate = now;
+                enemy.lastPlayerPos.copy(playerPosition);
+                
+                // Update path visualization
+                updatePathVisualization(enemy);
             }
         }
         
-        // Make the enemy face the player
-        enemy.mesh.lookAt(new THREE.Vector3(playerPosition.x, enemy.mesh.position.y, playerPosition.z));
+        // Follow path if available
+        if (enemy.path.length > 0 && enemy.currentPathIndex < enemy.path.length) {
+            const targetPoint = enemy.path[enemy.currentPathIndex];
+            const direction = new THREE.Vector3();
+            direction.subVectors(targetPoint, enemy.mesh.position).normalize();
+            
+            // Don't change the y-position (keep enemy on the ground)
+            direction.y = 0;
+            
+            // Move the enemy towards the target
+            enemy.mesh.position.x += direction.x * enemy.speed * delta;
+            enemy.mesh.position.z += direction.z * enemy.speed * delta;
+            
+            // Make the enemy face the direction of movement
+            enemy.mesh.lookAt(new THREE.Vector3(
+                enemy.mesh.position.x + direction.x,
+                enemy.mesh.position.y,
+                enemy.mesh.position.z + direction.z
+            ));
+            
+            // Check if waypoint reached
+            const distToWaypoint = new THREE.Vector2(
+                enemy.mesh.position.x - targetPoint.x,
+                enemy.mesh.position.z - targetPoint.z
+            ).length();
+            
+            if (distToWaypoint < 1) {
+                enemy.currentPathIndex++;
+            }
+        } else if (distToPlayer <= ENEMY_PERCEPTION_RANGE) {
+            // Direct line of sight to player, move directly
+            const direction = new THREE.Vector3();
+            direction.subVectors(playerPosition, enemy.mesh.position).normalize();
+            direction.y = 0;
+            
+            // Calculate potential new position
+            const newPosition = new THREE.Vector3(
+                enemy.mesh.position.x + direction.x * enemy.speed * delta,
+                enemy.mesh.position.y,
+                enemy.mesh.position.z + direction.z * delta
+            );
+            
+            // Check for collisions with obstacles
+            const canMove = !checkObstacleCollision(enemy.mesh.position, newPosition, 1.5);
+            
+            if (canMove) {
+                enemy.mesh.position.copy(newPosition);
+                
+                // Make the enemy face the player
+                enemy.mesh.lookAt(new THREE.Vector3(
+                    playerPosition.x,
+                    enemy.mesh.position.y,
+                    playerPosition.z
+                ));
+            } else {
+                // Enemy hit obstacle, become stunned
+                enemy.stunned = true;
+                enemy.stunnedUntil = now + ENEMY_STUN_DURATION;
+                
+                // Clear path
+                enemy.path = [];
+                enemy.currentPathIndex = 0;
+                updatePathVisualization(enemy);
+            }
+        }
+        
+        // Speed up if player is bhopping
+        if (isBhopping && bhopChainCount > 2) {
+            enemy.speed = enemy.baseSpeed * (1 + bhopChainCount * 0.05);
+        } else {
+            enemy.speed = enemy.baseSpeed;
+        }
         
         // Update the enemy's bounding box
         enemy.boundingBox.setFromObject(enemy.mesh);
@@ -359,6 +898,54 @@ function updateEnemies(delta) {
             // TODO: implement game over or damage logic
         }
     });
+}
+
+// Update enemy eye movements
+function updateEnemyEyes(enemy, target) {
+    // Make pupils look at player
+    const leftEyePos = new THREE.Vector3();
+    const rightEyePos = new THREE.Vector3();
+    
+    enemy.leftEye.getWorldPosition(leftEyePos);
+    enemy.rightEye.getWorldPosition(rightEyePos);
+    
+    const leftToTarget = new THREE.Vector3().subVectors(target, leftEyePos).normalize();
+    const rightToTarget = new THREE.Vector3().subVectors(target, rightEyePos).normalize();
+    
+    enemy.leftEye.lookAt(target);
+    enemy.rightEye.lookAt(target);
+    
+    // Limit pupil movement
+    const maxOffset = 0.08;
+    enemy.leftPupil.position.x = Math.min(maxOffset, Math.max(-maxOffset, leftToTarget.x * 0.1));
+    enemy.leftPupil.position.y = Math.min(maxOffset, Math.max(-maxOffset, leftToTarget.y * 0.1));
+    
+    enemy.rightPupil.position.x = Math.min(maxOffset, Math.max(-maxOffset, rightToTarget.x * 0.1));
+    enemy.rightPupil.position.y = Math.min(maxOffset, Math.max(-maxOffset, rightToTarget.y * 0.1));
+}
+
+// Update the path visualization line
+function updatePathVisualization(enemy) {
+    if (!showDebugPaths) {
+        enemy.pathLine.visible = false;
+        return;
+    }
+    
+    enemy.pathLine.visible = true;
+    
+    // Create line geometry from path points
+    if (enemy.path.length > 0) {
+        const points = [enemy.mesh.position.clone()];
+        points.push(...enemy.path);
+        
+        // Update line geometry
+        enemy.pathLine.geometry.dispose();
+        enemy.pathLine.geometry = new THREE.BufferGeometry().setFromPoints(points);
+    } else {
+        // No path, hide line
+        enemy.pathLine.geometry.dispose();
+        enemy.pathLine.geometry = new THREE.BufferGeometry();
+    }
 }
 
 // Helper function to check for collisions with obstacles
@@ -435,6 +1022,22 @@ function clearBhopResetTimers() {
     }
 }
 
+// Evaluate bhop timing quality (0-1)
+function evaluateBhopTiming(timeSinceLand) {
+    if (timeSinceLand <= BHOP_PERFECT_WINDOW) {
+        // Perfect timing
+        return 1.0;
+    } else if (timeSinceLand <= BHOP_GOOD_WINDOW) {
+        // Good timing
+        return 0.7;
+    } else if (timeSinceLand <= BHOP_MAX_WINDOW) {
+        // Acceptable timing
+        return 0.4;
+    }
+    // Failed timing
+    return 0;
+}
+
 // Handle key down events with improved bhop handling
 function onKeyDown(event) {
     switch (event.code) {
@@ -478,21 +1081,39 @@ function onKeyDown(event) {
                 clearBhopResetTimers();
                 
                 // Check for bhop timing between landing and jumping again
-                const timeSinceLastLand = jumpTime - lastLandTime;
-                if (showDebugBhop) console.log(`Time since last land: ${timeSinceLastLand}ms`);
+                const timeSinceLand = jumpTime - lastLandTime;
+                if (showDebugBhop) console.log(`Time since last land: ${timeSinceLand}ms`);
                 
-                if (lastLandTime > 0 && timeSinceLastLand <= BHOP_WINDOW) {
-                    // Successful bhop - increase counter
+                // Evaluate bhop timing quality
+                const bhopQuality = evaluateBhopTiming(timeSinceLand);
+                lastBhopQuality = bhopQuality;
+                
+                if (bhopQuality > 0) {
+                    // Successful bhop - increase counter based on quality
                     bhopChainCount = Math.min(MAX_BHOP_CHAIN, bhopChainCount + 1);
                     
-                    // Calculate bhop boost based on chain count
-                    currentBhopBoost = BHOP_BASE_BOOST + ((BHOP_MAX_BOOST - BHOP_BASE_BOOST) * (bhopChainCount / MAX_BHOP_CHAIN));
+                    // Calculate bhop boost based on chain count and quality
+                    const chainFactor = bhopChainCount / MAX_BHOP_CHAIN;
+                    const qualityBonus = bhopQuality * 0.5; // 0-0.5 bonus based on timing
+                    currentBhopBoost = BHOP_BASE_BOOST + 
+                                      ((BHOP_MAX_BOOST - BHOP_BASE_BOOST) * chainFactor) +
+                                      qualityBonus;
+                    
+                    // Increase momentum
+                    bhopMomentum = Math.min(1.0, bhopMomentum + 0.2);
                     
                     isBhopping = true;
-                    console.log(`BHOP activated! Chain: ${bhopChainCount}, Boost: ${currentBhopBoost.toFixed(2)}x`);
+                    console.log(`BHOP activated! Chain: ${bhopChainCount}, Quality: ${(bhopQuality*100).toFixed(0)}%, Boost: ${currentBhopBoost.toFixed(2)}x`);
+                    
+                    // Create visual effect
+                    createBhopEffect();
                     
                     // Update bhop indicator
-                    bhopIndicator.textContent = `BHOP x${bhopChainCount} (${currentBhopBoost.toFixed(2)}x)`;
+                    let qualityText = "PERFECT";
+                    if (bhopQuality < 1.0) qualityText = "GOOD";
+                    if (bhopQuality < 0.7) qualityText = "OK";
+                    
+                    bhopIndicator.textContent = `BHOP x${bhopChainCount} - ${qualityText} (${currentBhopBoost.toFixed(2)}x)`;
                     bhopIndicator.classList.add('active');
                     
                     // Keep the indicator visible while bhop is active
@@ -509,6 +1130,7 @@ function onKeyDown(event) {
                     isBhopping = false;
                     bhopChainCount = 0;
                     currentBhopBoost = BHOP_BASE_BOOST;
+                    bhopMomentum = 0;
                     updateMovementMode();
                 }
                 
@@ -518,6 +1140,16 @@ function onKeyDown(event) {
         case 'KeyB': // Debug mode toggle
             showDebugBhop = !showDebugBhop;
             console.log(`Debug Bhop ${showDebugBhop ? 'Enabled' : 'Disabled'}`);
+            break;
+        case 'KeyP': // Path visualization toggle
+            showDebugPaths = !showDebugPaths;
+            console.log(`Path visualization ${showDebugPaths ? 'Enabled' : 'Disabled'}`);
+            
+            // Update path visibility
+            enemies.forEach(enemy => {
+                enemy.pathLine.visible = showDebugPaths;
+                updatePathVisualization(enemy);
+            });
             break;
     }
 }
@@ -572,8 +1204,10 @@ function updateMovementMode() {
     }
     
     if (isBhopping) {
+        const qualityColor = lastBhopQuality > 0.9 ? "#ffff00" : 
+                            lastBhopQuality > 0.6 ? "#a0ff9f" : "#9fffbf";
         movementIndicator.textContent += ` + BHOP x${bhopChainCount}`;
-        movementIndicator.style.color = "#9fffbf";
+        movementIndicator.style.color = qualityColor;
     }
 }
 
@@ -682,9 +1316,19 @@ function updatePlayer(delta) {
     updateMovementMode();
     
     // Calculate the target speed based on input, bhop status, and movement mode
-    let targetSpeed = 0;
+    targetSpeed = 0;
     if (moveForward || moveBackward || moveLeft || moveRight) {
-        targetSpeed = isBhopping ? playerSpeed * currentBhopBoost : playerSpeed;
+        // Base speed determined by movement mode
+        targetSpeed = playerSpeed;
+        
+        // Apply bhop boost if active
+        if (isBhopping) {
+            targetSpeed *= currentBhopBoost;
+            
+            // Apply momentum-based boost
+            targetSpeed *= (1 + bhopMomentum * 0.3);
+        }
+        
         targetSpeed = Math.min(targetSpeed, maxSpeed);
     }
     
@@ -694,6 +1338,11 @@ function updatePlayer(delta) {
         currentAcceleration = sprintAcceleration;
     } else if (isWalking) {
         currentAcceleration = walkAcceleration;
+    }
+    
+    // Adjust acceleration in air
+    if (!canJump) {
+        currentAcceleration *= airControl;
     }
     
     // Smooth acceleration and deceleration
@@ -781,10 +1430,11 @@ function updatePlayer(delta) {
                     isBhopping = false;
                     bhopChainCount = 0;
                     currentBhopBoost = BHOP_BASE_BOOST;
+                    bhopMomentum = Math.max(0, bhopMomentum - BHOP_MOMENTUM_DECAY);
                     bhopIndicator.classList.remove('active');
                     updateMovementMode();
                 }
-            }, BHOP_WINDOW + 100); // Give slightly more time than the bhop window
+            }, BHOP_MAX_WINDOW + 50); // Give slightly more time than the bhop window
         }
         
         canJump = true;
@@ -801,6 +1451,14 @@ function updatePlayer(delta) {
     if (Math.abs(yawObject.position.z) > boundaryLimit) {
         yawObject.position.z = Math.sign(yawObject.position.z) * boundaryLimit;
     }
+    
+    // Gradually decay bhop momentum when not jumping
+    if (canJump && !isJumping && bhopMomentum > 0) {
+        bhopMomentum = Math.max(0, bhopMomentum - BHOP_MOMENTUM_DECAY * delta);
+    }
+    
+    // Update particles
+    updateParticles(delta);
     
     // Update debug info
     updateDebugInfo();
@@ -819,16 +1477,20 @@ function updateFOV(delta) {
         targetFOV = runningFOV;
     }
     
-    // Add additional FOV boost during bhop proportional to chain count
-    if (isBhopping) {
-        targetFOV += bhopChainCount * 1.5; // Add 1.5 degrees per bhop in chain
+    // Add additional FOV boost based on current speed
+    const speedRatio = currentSpeed / runSpeed;
+    targetFOV += (speedRatio - 1) * 5;
+    
+    // Add boost for bhop momentum
+    if (bhopMomentum > 0) {
+        targetFOV += bhopMomentum * 10;
     }
     
     // Smooth transition to target FOV
     camera.fov += (targetFOV - camera.fov) * fovChangeSpeed * delta;
     
     // Ensure FOV stays within reasonable bounds
-    camera.fov = Math.max(walkingFOV - 5, Math.min(sprintingFOV + 20, camera.fov));
+    camera.fov = Math.max(walkingFOV - 5, Math.min(sprintingFOV + 25, camera.fov));
     
     // Update projection matrix when FOV changes
     camera.updateProjectionMatrix();
@@ -837,15 +1499,33 @@ function updateFOV(delta) {
 // Update debugging information
 function updateDebugInfo() {
     const nowTime = Date.now();
+    const timeSinceLand = nowTime - lastLandTime;
+    const bhopWindowRemaining = Math.max(0, BHOP_MAX_WINDOW - timeSinceLand);
+    
+    let bhopStatusColor = "#ffffff";
+    if (bhopWindowRemaining > 0) {
+        // In bhop window
+        if (bhopWindowRemaining <= BHOP_PERFECT_WINDOW) {
+            bhopStatusColor = "#ffff00"; // Perfect
+        } else if (bhopWindowRemaining <= BHOP_GOOD_WINDOW) {
+            bhopStatusColor = "#00ff00"; // Good
+        } else {
+            bhopStatusColor = "#00ffff"; // Ok
+        }
+    }
+    
     debugInfo.innerHTML = `
-        Position: (${yawObject.position.x.toFixed(2)}, ${yawObject.position.y.toFixed(2)}, ${yawObject.position.z.toFixed(2)})<br>
-        Speed: ${currentSpeed.toFixed(2)} (${isSprinting ? 'Sprinting' : isWalking ? 'Walking' : 'Running'})<br>
-        FOV: ${camera.fov.toFixed(1)}<br>
-        Bhop Chain: ${bhopChainCount} (Boost: ${currentBhopBoost.toFixed(2)}x)<br>
-        Controls: WASD (move), SHIFT (sprint), ALT/CTRL (walk)<br>
-        Movement Status: ${canJump ? 'Grounded' : 'In Air'}, ${isBhopping ? 'Bhop Active' : ''}<br>
-        Time Since Land: ${nowTime - lastLandTime}ms / ${BHOP_WINDOW}ms<br>
-        Enemies: ${enemies.length}
+        <div style="color: ${bhopStatusColor}">
+        Speed: ${currentSpeed.toFixed(1)} / ${targetSpeed.toFixed(1)} 
+        (${isSprinting ? 'Sprinting' : isWalking ? 'Walking' : 'Running'})<br>
+        Bhop Chain: ${bhopChainCount} (Boost: ${currentBhopBoost.toFixed(2)}x, Momentum: ${(bhopMomentum*100).toFixed(0)}%)<br>
+        </div>
+        Bhop Window: ${timeSinceLand}ms / ${BHOP_MAX_WINDOW}ms (${bhopWindowRemaining}ms left)<br>
+        FOV: ${camera.fov.toFixed(1)}° • Position: (${yawObject.position.x.toFixed(0)}, ${yawObject.position.z.toFixed(0)})<br>
+        Status: ${canJump ? 'Grounded' : 'In Air'} 
+        ${isBhopping ? '• <span style="color:#00ff00">Bhop Active</span>' : ''} 
+        • Enemies: ${enemies.length} 
+        ${showDebugBhop ? '• <span style="color:#ffff00">DEBUG ON</span>' : ''}
     `;
 }
 
