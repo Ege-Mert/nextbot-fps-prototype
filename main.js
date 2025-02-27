@@ -16,6 +16,7 @@ let isJumping = false;
 let isBhopping = false;
 let jumpTime = 0;
 let lastJumpTime = 0;
+let lastLandTime = 0; // Track when the player last landed
 const BHOP_WINDOW = 450; // ms window to perform a successful bhop
 
 // Bhop variables for gradual speed increase
@@ -24,6 +25,7 @@ const MAX_BHOP_CHAIN = 10; // Maximum number of consecutive bhops
 const BHOP_BASE_BOOST = 1.2; // Initial speed boost
 const BHOP_MAX_BOOST = 2.5; // Maximum speed boost after MAX_BHOP_CHAIN
 let currentBhopBoost = BHOP_BASE_BOOST;
+let bhopResetTimer = null; // Timer for resetting bhop state
 
 // Physics variables
 let velocity = new THREE.Vector3();
@@ -72,6 +74,9 @@ const ENEMY_SPEED = 5;
 const ENEMY_HEIGHT = 2.5;
 const ENEMY_SPAWN_DISTANCE = 30;
 const MAX_ENEMIES = 3;
+
+// Debug variables
+let showDebugBhop = false; // Show detailed bhop debugging
 
 // Initialize the scene, camera, and renderer
 function init() {
@@ -422,7 +427,15 @@ function onMouseMove(event) {
     pitchObject.rotation.x = Math.max(-Math.PI/2 + 0.01, Math.min(Math.PI/2 - 0.01, pitchObject.rotation.x));
 }
 
-// Handle key down events
+// Clear any existing bhop reset timers
+function clearBhopResetTimers() {
+    if (bhopResetTimer) {
+        clearTimeout(bhopResetTimer);
+        bhopResetTimer = null;
+    }
+}
+
+// Handle key down events with improved bhop handling
 function onKeyDown(event) {
     switch (event.code) {
         case 'KeyW':
@@ -461,9 +474,14 @@ function onKeyDown(event) {
                 isJumping = true;
                 jumpTime = Date.now();
                 
-                // Check for bhop timing
-                const timeSinceLastJump = jumpTime - lastJumpTime;
-                if (timeSinceLastJump <= BHOP_WINDOW && timeSinceLastJump > 0) {
+                // Clear any existing bhop reset timers
+                clearBhopResetTimers();
+                
+                // Check for bhop timing between landing and jumping again
+                const timeSinceLastLand = jumpTime - lastLandTime;
+                if (showDebugBhop) console.log(`Time since last land: ${timeSinceLastLand}ms`);
+                
+                if (lastLandTime > 0 && timeSinceLastLand <= BHOP_WINDOW) {
                     // Successful bhop - increase counter
                     bhopChainCount = Math.min(MAX_BHOP_CHAIN, bhopChainCount + 1);
                     
@@ -476,19 +494,30 @@ function onKeyDown(event) {
                     // Update bhop indicator
                     bhopIndicator.textContent = `BHOP x${bhopChainCount} (${currentBhopBoost.toFixed(2)}x)`;
                     bhopIndicator.classList.add('active');
-                    setTimeout(() => {
-                        bhopIndicator.classList.remove('active');
-                    }, 1000);
                     
+                    // Keep the indicator visible while bhop is active
+                    setTimeout(() => {
+                        if (!isBhopping) {
+                            bhopIndicator.classList.remove('active');
+                        }
+                    }, 1000);
                 } else {
                     // Failed bhop chain - reset counter
+                    if (bhopChainCount > 0) {
+                        console.log(`BHOP chain broken! Was at ${bhopChainCount}`);
+                    }
                     isBhopping = false;
                     bhopChainCount = 0;
                     currentBhopBoost = BHOP_BASE_BOOST;
+                    updateMovementMode();
                 }
                 
                 lastJumpTime = jumpTime;
             }
+            break;
+        case 'KeyB': // Debug mode toggle
+            showDebugBhop = !showDebugBhop;
+            console.log(`Debug Bhop ${showDebugBhop ? 'Enabled' : 'Disabled'}`);
             break;
     }
 }
@@ -720,6 +749,9 @@ function updatePlayer(delta) {
         }
     }
     
+    // Store previous y position to detect landing
+    const previousY = yawObject.position.y;
+    
     // Apply vertical movement (gravity/jumping)
     yawObject.position.y += velocity.y * delta;
     
@@ -729,18 +761,34 @@ function updatePlayer(delta) {
     // Update FOV for speed effect
     updateFOV(delta);
     
-    // Ground collision check
+    // Ground collision check - Detect when player lands
     if (yawObject.position.y < playerHeight) {
         yawObject.position.y = playerHeight;
         velocity.y = 0;
+        
+        // If we just landed (were previously in the air)
+        if (!canJump) {
+            lastLandTime = Date.now();
+            if (showDebugBhop) console.log(`Landed at: ${lastLandTime}`);
+            
+            // Don't reset bhop immediately on landing - give player a chance to jump again
+            clearBhopResetTimers();
+            
+            // Set a timer to reset bhop state if player doesn't jump quickly
+            bhopResetTimer = setTimeout(() => {
+                if (canJump && !isJumping) { // Only reset if still grounded
+                    if (showDebugBhop && isBhopping) console.log('BHOP reset due to timeout');
+                    isBhopping = false;
+                    bhopChainCount = 0;
+                    currentBhopBoost = BHOP_BASE_BOOST;
+                    bhopIndicator.classList.remove('active');
+                    updateMovementMode();
+                }
+            }, BHOP_WINDOW + 100); // Give slightly more time than the bhop window
+        }
+        
         canJump = true;
         isJumping = false;
-        
-        // Reset bhop status after landing with more forgiving timing
-        setTimeout(() => {
-            isBhopping = false;
-            updateMovementMode(); // Update the movement indicator
-        }, 350);
     }
     
     // Boundary checks to keep player within the play area
@@ -788,6 +836,7 @@ function updateFOV(delta) {
 
 // Update debugging information
 function updateDebugInfo() {
+    const nowTime = Date.now();
     debugInfo.innerHTML = `
         Position: (${yawObject.position.x.toFixed(2)}, ${yawObject.position.y.toFixed(2)}, ${yawObject.position.z.toFixed(2)})<br>
         Speed: ${currentSpeed.toFixed(2)} (${isSprinting ? 'Sprinting' : isWalking ? 'Walking' : 'Running'})<br>
@@ -795,6 +844,7 @@ function updateDebugInfo() {
         Bhop Chain: ${bhopChainCount} (Boost: ${currentBhopBoost.toFixed(2)}x)<br>
         Controls: WASD (move), SHIFT (sprint), ALT/CTRL (walk)<br>
         Movement Status: ${canJump ? 'Grounded' : 'In Air'}, ${isBhopping ? 'Bhop Active' : ''}<br>
+        Time Since Land: ${nowTime - lastLandTime}ms / ${BHOP_WINDOW}ms<br>
         Enemies: ${enemies.length}
     `;
 }
