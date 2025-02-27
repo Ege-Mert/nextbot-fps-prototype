@@ -13,8 +13,9 @@ let isJumping = false;
 let isBhopping = false;
 let jumpTime = 0;
 let lastJumpTime = 0;
-const BHOP_WINDOW = 200; // ms window to perform a successful bhop
-const BHOP_BOOST = 1.5; // Speed multiplier for successful bhop
+// Increase bhop window to make it more forgiving
+const BHOP_WINDOW = 400; // ms window to perform a successful bhop (increased from 200)
+const BHOP_BOOST = 1.8; // Speed multiplier for successful bhop (increased from 1.5)
 
 // Physics variables
 let velocity = new THREE.Vector3();
@@ -23,6 +24,11 @@ const playerHeight = 2;
 const gravity = 30;
 const jumpForce = 12;
 const playerSpeed = 10;
+
+// FOV variables
+const defaultFOV = 75;
+const runningFOV = 85;
+const fovChangeSpeed = 5;
 
 // Enemy variables
 let enemies = [];
@@ -44,7 +50,7 @@ function init() {
     scene.background = new THREE.Color(0x87CEEB); // Sky blue background
 
     // Create the camera (first-person perspective)
-    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera = new THREE.PerspectiveCamera(defaultFOV, window.innerWidth / window.innerHeight, 0.1, 1000);
     camera.position.y = playerHeight;
 
     // Create the renderer
@@ -79,7 +85,8 @@ function init() {
 
 // Create the ground plane
 function createGround() {
-    const groundGeometry = new THREE.PlaneGeometry(100, 100);
+    // Increased ground size from 100x100 to 200x200
+    const groundGeometry = new THREE.PlaneGeometry(200, 200);
     const groundMaterial = new THREE.MeshStandardMaterial({
         color: 0x228B22, // Forest green
         roughness: 0.8
@@ -93,13 +100,6 @@ function createGround() {
 }
 
 // Create and spawn enemies
-function spawnEnemies(count) {
-    for (let i = 0; i < count; i++) {
-        createEnemy();
-    }
-}
-
-// Create a single enemy
 function createEnemy() {
     // Create enemy mesh
     const enemyGeometry = new THREE.BoxGeometry(1.5, ENEMY_HEIGHT, 1);
@@ -132,6 +132,13 @@ function createEnemy() {
     enemies.push(enemyObj);
     
     return enemyObj;
+}
+
+// Create and spawn enemies
+function spawnEnemies(count) {
+    for (let i = 0; i < count; i++) {
+        createEnemy();
+    }
 }
 
 // Update enemy positions and AI
@@ -279,7 +286,8 @@ function updatePlayer(delta) {
     // Handle movement based on camera direction
     const speed = isBhopping ? playerSpeed * BHOP_BOOST : playerSpeed;
     
-    direction.z = Number(moveForward) - Number(moveBackward);
+    // Fix: Corrected the direction calculation to fix inverted forward/backward
+    direction.z = Number(moveBackward) - Number(moveForward);  // Fixed inversion
     direction.x = Number(moveRight) - Number(moveLeft);
     direction.normalize();
     
@@ -310,6 +318,9 @@ function updatePlayer(delta) {
     camera.position.z += vz * delta;
     camera.position.y += velocity.y * delta;
     
+    // Update FOV for speed effect
+    updateFOV(delta);
+    
     // Ground collision check
     if (camera.position.y < playerHeight) {
         camera.position.y = playerHeight;
@@ -320,11 +331,11 @@ function updatePlayer(delta) {
         // Reset bhop status after landing
         setTimeout(() => {
             isBhopping = false;
-        }, 200);
+        }, 300); // Increased from 200ms to give more time
     }
     
     // Boundary checks to keep player within the play area
-    const boundaryLimit = 49; // Slightly less than half the ground size
+    const boundaryLimit = 99; // Increased to match larger ground
     
     if (Math.abs(camera.position.x) > boundaryLimit) {
         camera.position.x = Math.sign(camera.position.x) * boundaryLimit;
@@ -338,11 +349,41 @@ function updatePlayer(delta) {
     updateDebugInfo();
 }
 
+// Update FOV based on movement to enhance speed sensation
+function updateFOV(delta) {
+    // Determine if player is moving
+    const isMoving = moveForward || moveBackward || moveLeft || moveRight;
+    
+    // Adjust FOV
+    if (isMoving) {
+        // Gradually increase FOV when moving
+        if (camera.fov < runningFOV) {
+            camera.fov += fovChangeSpeed * delta * 10;
+            if (camera.fov > runningFOV) camera.fov = runningFOV;
+            camera.updateProjectionMatrix();
+        }
+    } else {
+        // Gradually decrease FOV when standing still
+        if (camera.fov > defaultFOV) {
+            camera.fov -= fovChangeSpeed * delta * 10;
+            if (camera.fov < defaultFOV) camera.fov = defaultFOV;
+            camera.updateProjectionMatrix();
+        }
+    }
+    
+    // Increase FOV more when bhopping
+    if (isBhopping && camera.fov < runningFOV + 5) {
+        camera.fov += fovChangeSpeed * delta * 15;
+        camera.updateProjectionMatrix();
+    }
+}
+
 // Update debugging information
 function updateDebugInfo() {
     debugInfo.innerHTML = `
         Position: (${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)})<br>
         Velocity: (${velocity.x.toFixed(2)}, ${velocity.y.toFixed(2)}, ${velocity.z.toFixed(2)})<br>
+        FOV: ${camera.fov.toFixed(1)}<br>
         Can Jump: ${canJump}<br>
         Is Jumping: ${isJumping}<br>
         Bhop Active: ${isBhopping}<br>
