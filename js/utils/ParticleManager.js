@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+// THREE is already available globally from the script tag in index.html
 
 export class ParticleManager {
     /**
