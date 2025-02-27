@@ -74,6 +74,9 @@ export class Game {
         // Set up key bindings for game control
         this.setupGameControls();
         
+        // Set up audio initialization on user interaction
+        this.setupAudioInitialization();
+        
         // Everything is ready, start the game
         this.start();
     }
@@ -87,6 +90,33 @@ export class Game {
             if (event.code === 'KeyP') {
                 this.togglePause();
             }
+        });
+    }
+    
+    /**
+     * Set up audio initialization on user interaction
+     * Audio context can only be started after a user gesture
+     */
+    setupAudioInitialization() {
+        // Initialize audio when user clicks or presses a key
+        const initAudio = () => {
+            if (this.audioManager) {
+                this.audioManager.init();
+                console.log('Audio context started after user interaction');
+            }
+            
+            // Remove event listeners after initialization
+            document.removeEventListener('click', initAudio);
+            document.removeEventListener('keydown', initAudio);
+        };
+        
+        // Add event listeners for user interaction
+        document.addEventListener('click', initAudio);
+        document.addEventListener('keydown', initAudio);
+        
+        // Also try to initialize on first jump or game action
+        document.getElementById('instructions').addEventListener('click', () => {
+            setTimeout(initAudio, 100); // Short delay to ensure it happens after pointer lock
         });
     }
     
