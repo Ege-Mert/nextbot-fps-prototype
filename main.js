@@ -24,6 +24,13 @@ const gravity = 30;
 const jumpForce = 12;
 const playerSpeed = 10;
 
+// Enemy variables
+let enemies = [];
+const ENEMY_SPEED = 5;
+const ENEMY_HEIGHT = 2.5;
+const ENEMY_SPAWN_DISTANCE = 30;
+const MAX_ENEMIES = 3;
+
 // Initialize the scene, camera, and renderer
 function init() {
     // Set up instruction UI elements
@@ -59,6 +66,9 @@ function init() {
 
     // Create a ground plane
     createGround();
+    
+    // Spawn initial enemies
+    spawnEnemies(MAX_ENEMIES);
 
     // Set up event listeners
     setupEventListeners();
@@ -80,6 +90,77 @@ function createGround() {
     ground.receiveShadow = true;
     ground.name = 'ground';
     scene.add(ground);
+}
+
+// Create and spawn enemies
+function spawnEnemies(count) {
+    for (let i = 0; i < count; i++) {
+        createEnemy();
+    }
+}
+
+// Create a single enemy
+function createEnemy() {
+    // Create enemy mesh
+    const enemyGeometry = new THREE.BoxGeometry(1.5, ENEMY_HEIGHT, 1);
+    const enemyMaterial = new THREE.MeshStandardMaterial({
+        color: 0xff0000,  // Red color for the enemy
+        roughness: 0.5
+    });
+    
+    const enemy = new THREE.Mesh(enemyGeometry, enemyMaterial);
+    
+    // Position the enemy randomly around the player, but at a distance
+    const angle = Math.random() * Math.PI * 2;
+    enemy.position.x = camera.position.x + Math.cos(angle) * ENEMY_SPAWN_DISTANCE;
+    enemy.position.z = camera.position.z + Math.sin(angle) * ENEMY_SPAWN_DISTANCE;
+    enemy.position.y = ENEMY_HEIGHT / 2;
+    
+    enemy.castShadow = true;
+    enemy.receiveShadow = true;
+    
+    // Add enemy to the scene and to our tracking array
+    scene.add(enemy);
+    
+    // Create enemy object with properties
+    const enemyObj = {
+        mesh: enemy,
+        speed: ENEMY_SPEED * (0.8 + Math.random() * 0.4), // Vary speed slightly
+        boundingBox: new THREE.Box3().setFromObject(enemy)
+    };
+    
+    enemies.push(enemyObj);
+    
+    return enemyObj;
+}
+
+// Update enemy positions and AI
+function updateEnemies(delta) {
+    enemies.forEach(enemy => {
+        // Update the enemy's position to move towards the player
+        const direction = new THREE.Vector3();
+        direction.subVectors(camera.position, enemy.mesh.position).normalize();
+        
+        // Don't change the y-position (keep enemy on the ground)
+        direction.y = 0;
+        
+        // Move the enemy towards the player
+        enemy.mesh.position.x += direction.x * enemy.speed * delta;
+        enemy.mesh.position.z += direction.z * enemy.speed * delta;
+        
+        // Make the enemy face the player
+        enemy.mesh.lookAt(new THREE.Vector3(camera.position.x, enemy.mesh.position.y, camera.position.z));
+        
+        // Update the enemy's bounding box
+        enemy.boundingBox.setFromObject(enemy.mesh);
+        
+        // Check for collision with player
+        const playerBoundingBox = new THREE.Box3().setFromObject(camera);
+        if (enemy.boundingBox.intersectsBox(playerBoundingBox)) {
+            console.log('Player collided with enemy!');
+            // TODO: implement game over or damage logic
+        }
+    });
 }
 
 // Set up event listeners for controls
@@ -242,6 +323,17 @@ function updatePlayer(delta) {
         }, 200);
     }
     
+    // Boundary checks to keep player within the play area
+    const boundaryLimit = 49; // Slightly less than half the ground size
+    
+    if (Math.abs(camera.position.x) > boundaryLimit) {
+        camera.position.x = Math.sign(camera.position.x) * boundaryLimit;
+    }
+    
+    if (Math.abs(camera.position.z) > boundaryLimit) {
+        camera.position.z = Math.sign(camera.position.z) * boundaryLimit;
+    }
+    
     // Update debug info
     updateDebugInfo();
 }
@@ -256,7 +348,8 @@ function updateDebugInfo() {
         Bhop Active: ${isBhopping}<br>
         Jump Time: ${jumpTime}<br>
         Last Jump Time: ${lastJumpTime}<br>
-        Time Since Last Jump: ${jumpTime - lastJumpTime}ms
+        Time Since Last Jump: ${jumpTime - lastJumpTime}ms<br>
+        Enemy Count: ${enemies.length}
     `;
 }
 
@@ -267,6 +360,7 @@ function animate() {
     const delta = Math.min(0.1, clock.getDelta());
     
     updatePlayer(delta);
+    updateEnemies(delta);
     
     renderer.render(scene, camera);
 }
