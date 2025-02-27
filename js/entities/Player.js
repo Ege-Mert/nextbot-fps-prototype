@@ -412,7 +412,8 @@ export class Player extends PhysicsEntity {
             this.yawObject.position.x = newPosition.x;
             this.yawObject.position.z = newPosition.z;
         } else {
-            // If collision, try to slide along walls
+            // If collision, try to slide along walls with smoothing
+            const slideFactor = 0.1; // Smoothing factor for sliding
             // Try X movement only
             const xOnlyPosition = new THREE.Vector3(
                 newPosition.x,
@@ -421,7 +422,7 @@ export class Player extends PhysicsEntity {
             );
             
             if (!this.collisionUtils.checkObstacleCollision(this.scene, xOnlyPosition, playerRadius)) {
-                this.yawObject.position.x = newPosition.x;
+                this.yawObject.position.x += (newPosition.x - this.yawObject.position.x) * slideFactor;
             }
             
             // Try Z movement only
@@ -432,7 +433,7 @@ export class Player extends PhysicsEntity {
             );
             
             if (!this.collisionUtils.checkObstacleCollision(this.scene, zOnlyPosition, playerRadius)) {
-                this.yawObject.position.z = newPosition.z;
+                this.yawObject.position.z += (newPosition.z - this.yawObject.position.z) * slideFactor;
             }
         }
         
@@ -479,9 +480,10 @@ export class Player extends PhysicsEntity {
      * @param {number} sensitivity - Mouse sensitivity
      */
     handleMouseMovement(movementX, movementY, sensitivity) {
-        this.yawObject.rotation.y -= movementX * sensitivity;
+        const smoothFactor = 0.1; // Smoothing factor for mouse movement
+        this.yawObject.rotation.y -= movementX * sensitivity * smoothFactor;
         
-        this.pitchObject.rotation.x -= movementY * sensitivity;
+        this.pitchObject.rotation.x -= movementY * sensitivity * smoothFactor;
         // Constrain pitch to avoid flipping
         this.pitchObject.rotation.x = Math.max(
             -Math.PI/2 + 0.01, 
