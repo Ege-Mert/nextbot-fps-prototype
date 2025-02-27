@@ -8,7 +8,8 @@
         body { 
             margin: 0; 
             overflow: hidden; 
-            font-family: Arial, sans-serif;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #000;
         }
         canvas { 
             display: block; 
@@ -20,33 +21,86 @@
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            background-color: rgba(0, 0, 0, 0.7);
+            background-color: rgba(0, 0, 0, 0.8);
             color: white;
-            padding: 20px;
-            border-radius: 8px;
+            padding: 25px;
+            border-radius: 10px;
             text-align: center;
             user-select: none;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            max-width: 400px;
+        }
+        #instructions h1 {
+            margin-top: 0;
+            color: #ff4444;
+            text-shadow: 0 0 5px rgba(255, 68, 68, 0.5);
+        }
+        #instructions p {
+            margin: 10px 0;
+        }
+        #instructions strong {
+            color: #4fc3f7;
+            font-weight: bold;
         }
         #instructions.hidden {
             display: none;
         }
         #hud {
             position: absolute;
+            top: 10px;
+            left: 10px;
             padding: 10px;
             color: white;
             font-family: monospace;
             user-select: none;
+            background-color: rgba(0, 0, 0, 0.5);
+            border-radius: 5px;
+            font-size: 12px;
+            z-index: 10;
         }
         #crosshair {
             position: absolute;
             top: 50%;
             left: 50%;
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background-color: rgba(255, 255, 255, 0.5);
             transform: translate(-50%, -50%);
             pointer-events: none;
+            z-index: 100;
+        }
+        #crosshair::before,
+        #crosshair::after {
+            content: "";
+            position: absolute;
+            background-color: rgba(255, 255, 255, 0.8);
+        }
+        #crosshair::before {
+            width: 2px;
+            height: 10px;
+            left: 50%;
+            margin-left: -1px;
+        }
+        #crosshair::after {
+            width: 10px;
+            height: 2px;
+            top: 50%;
+            margin-top: -1px;
+        }
+        #indicator {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            font-family: monospace;
+            text-align: center;
+            padding: 8px 15px;
+            background-color: rgba(0, 0, 0, 0.5);
+            border-radius: 20px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        #indicator.active {
+            opacity: 1;
         }
     </style>
 </head>
@@ -55,12 +109,14 @@
         <div id="debug-info"></div>
     </div>
     <div id="crosshair"></div>
+    <div id="indicator">BHOP ACTIVATED!</div>
     <div id="instructions">
         <h1>Nextbot FPS Prototype</h1>
         <p>Click to enable controls</p>
         <p><strong>WASD</strong> - Movement</p>
         <p><strong>SPACE</strong> - Jump / Bunny Hop</p>
         <p><strong>ESC</strong> - Release pointer lock</p>
+        <p>Activate bunny hop by timing your jumps just after landing!</p>
     </div>
     <canvas id="game-canvas"></canvas>
 
